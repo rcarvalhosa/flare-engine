@@ -44,6 +44,7 @@ gmon.out
 
 # os x
 .DS_Store
+Flare.app/
 
 # qt creator
 *.autosave
@@ -56,3 +57,7 @@ a.out.wasm
 # visual studio and its cmake
 .vs/
 CMakeSettings.json
+
+# lib
+/lib/
+/mods/

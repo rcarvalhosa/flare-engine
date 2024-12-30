@@ -184,6 +184,7 @@ static void mainLoop () {
 
 	while ( !done ) {
 		int loops = 0;
+		// 1. Handle timing and frame limiting
 		uint64_t now_ticks = SDL_GetPerformanceCounter();
 
 		while (now_ticks >= logic_ticks && loops < settings->max_frames_per_sec) {
@@ -196,17 +197,20 @@ static void mainLoop () {
 				break;
 			}
 
+			// 2. Handle input
 			SDL_PumpEvents();
 			inpt->handle();
 
-			// Skip game logic when minimized
+			// 3. Skip game logic when minimized
 			// *except* if the player closes the window when minimized. We then continue with the logic to properly exit
 			if (inpt->window_minimized && !inpt->window_restored && !inpt->done)
 				break;
 
+			// 4. Update Game Logic
 			gswitch->logic();
 			inpt->resetScroll();
 
+			// 5. Check for exit conditions
 			// Engine done means the user escapes the main game menu.
 			// Input done means the user closes the window.
 			done = gswitch->done || inpt->done;
@@ -230,6 +234,7 @@ static void mainLoop () {
 			}
 		}
 
+		// 6. Render the game
 		if (!inpt->window_minimized) {
 			render_device->blankScreen();
 			gswitch->render();

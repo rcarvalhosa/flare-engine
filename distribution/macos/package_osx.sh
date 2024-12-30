@@ -1,119 +1,70 @@
-#!/usr/bin/env bash -e
+#!/usr/bin/env bash
+set -e  # Exit on any error
 
 cd "`dirname "$0"`"
 cd ../../
 
 FLARE_EXE=$1
-FLARE_DEPS_SRC="http"
-FLARE_GAME=""
 
 if [ -z "${FLARE_EXE}" ]; then
-  echo "usage: $0 <path to flare executable>"
-  exit 1
-fi
-if [ ! -f ${FLARE_EXE} ]; then
-  echo "no Flare executable found at ${FLARE_EXE}. Please follow README in order to build Flare engine first"
-  exit 1
-fi
-if [ `otool -L ${FLARE_EXE} | egrep libSDL2 | wc -l` -lt 1 ]; then
-  echo "invalid Flare executable"
-  exit 1
+    echo "Usage: $0 <path to flare executable>"
+    exit 1
 fi
 
-if [ "$2" != "" ]; then
- FLARE_DEPS_SRC=$2
-fi
-if [ ${FLARE_DEPS_SRC} == "http" ]; then
-  echo "download dependencies from website"
-elif [ ${FLARE_DEPS_SRC} == "homebrew" ]; then
-  echo "copy dependencies from homebrew"
-else
-  echo "usage: $0 <path to flare executable> <http|homebrew>"
-  exit 1
-fi
+# Get the absolute path to directories
+ENGINE_DIR=$(pwd)
+GAME_DIR="../flare-game"
 
-if [ "$3" != "" ]; then
- FLARE_GAME=$3
-fi
+DST="${ENGINE_DIR}/Flare.app"
 
-DST=/tmp/___flare.build
-rm -fr ${DST} && mkdir -p ${DST}
+# Remove existing app bundle
+echo "Cleaning up old bundle..."
+rm -rf "${DST}"
 
-cp -r RELEASE_NOTES.txt \
-  README.engine.md \
-  CREDITS.engine.txt \
-  COPYING \
-  ${FLARE_EXE} \
-  mods ${DST}
+# Create bundle structure
+echo "Creating app bundle..."
+mkdir -p "${DST}/Contents/MacOS"
+mkdir -p "${DST}/Contents/Frameworks"
 
-if [ ${FLARE_DEPS_SRC} == "http" ]; then
-  #feel free to build dependencies by yourself btw
-  wget 'http://files.ruads.org/flare_osx_dependencies.tar.gz' -P ${DST}
-  tar -zxf ${DST}/flare_osx_dependencies.tar.gz -C ${DST}
-  rm -f ${DST}/flare_osx_dependencies.tar.gz
-elif [ ${FLARE_DEPS_SRC} == "homebrew" ]; then
-  LIB=${DST}/lib
-  mkdir ${LIB}
-  # SDL2
-  cp /usr/local/opt/sdl2/COPYING.txt ${LIB}/SDL2-COPYING.txt
-  cp /usr/local/opt/sdl2/README.txt ${LIB}/SDL2-README.txt
-  cp /usr/local/opt/sdl2/lib/libSDL2-2.0.0.dylib ${LIB}
-  cp /usr/local/opt/sdl2_image/lib/libSDL2_image-2.0.0.dylib ${LIB}
-  cp /usr/local/opt/sdl2_mixer/lib/libSDL2_mixer-2.0.0.dylib ${LIB}
-  cp /usr/local/opt/sdl2_ttf/lib/libSDL2_ttf-2.0.0.dylib ${LIB}
-  # VORBIS
-  cp /usr/local/opt/libvorbis/COPYING ${LIB}/VORBIS-COPYING
-  cp /usr/local/opt/libvorbis/lib/libvorbis.0.dylib ${LIB}
-  cp /usr/local/opt/libvorbis/lib/libvorbisenc.2.dylib ${LIB}
-  cp /usr/local/opt/libvorbis/lib/libvorbisfile.3.dylib ${LIB}
-  # OGG
-  cp /usr/local/opt/libogg/COPYING ${LIB}/OGG-COPYING
-  cp /usr/local/opt/libogg/lib/libogg.0.dylib ${LIB}
-  # PNG
-  cp /usr/local/opt/libpng/lib/libpng16.16.dylib ${LIB}
+# Copy executable
+echo "Copying executable..."
+cp "${FLARE_EXE}" "${DST}/Contents/MacOS/flare.orig"
+chmod 755 "${DST}/Contents/MacOS/flare.orig"
 
-  # Verify all homebrew deps using using otool
-  for DYLIB in ${LIB}/*.dylib; do
-    #echo "dylib: ${DYLIB}"
-    for LINE in $(otool -L ${DYLIB}); do
-      #echo "line: ${LINE}"
-      if [[ $LINE == *"/usr/local/opt/"* ]]; then
-	NEED=$(basename ${LINE})
-	#echo "${DYLIB} need: ${NEED}"
-	FILE="${LIB}/${NEED}"
-	if [ ! -f "${FILE}" ]; then
-          echo "${NEED} not found, copying"
-	  cp ${LINE} ${LIB}
-        fi
-      fi
-    done
-  done
+# Copy mods directory next to executable
+echo "Creating mods directory..."
+mkdir -p "${DST}/Contents/MacOS/mods"
+MODS_DST="${DST}/Contents/MacOS/mods"
 
-else
-  echo "'${FLARE_DEPS_SRC}' unknown dependency source"
-  exit 1
+# Copy default mod from engine first
+echo "Copying default mod..."
+cp -R "${ENGINE_DIR}/mods/default" "${MODS_DST}/"
+
+# Copy game mods
+echo "Copying game mods..."
+cp -R "${GAME_DIR}/mods/fantasycore" "${MODS_DST}/"
+cp -R "${GAME_DIR}/mods/empyrean_campaign" "${MODS_DST}/"
+
+# Create launcher script
+echo "Creating launcher script..."
+cat > "${DST}/Contents/MacOS/flare" << 'EOF'
+#!/bin/bash
+DIR=$(cd "$(dirname "$0")" && pwd)
+cd "$DIR"  # Change to executable directory
+exec "./flare.orig"
+EOF
+
+chmod 755 "${DST}/Contents/MacOS/flare"
+
+# Copy and fix library dependencies
+echo "Fixing library dependencies..."
+if ! command -v dylibbundler &> /dev/null; then
+    echo "Error: dylibbundler not found. Please install with: brew install dylibbundler"
+    exit 1
 fi
 
-if [ "${FLARE_GAME}" != "" ]; then
-  FLARE_ENGINE_MOD_LIST=mods/mods.txt
-  FLARE_GAME_MOD=${FLARE_GAME}/mods
-  while IFS= read -r MOD; do
-    MOD_DIR=${FLARE_GAME_MOD}/${MOD}
-    if [ "${MOD}" != "" ] && [ -d "${MOD_DIR}" ]; then
-      cp -r ${MOD_DIR} ${DST}/mods
-      echo "copied ${MOD}"
-    fi
-  done < "${FLARE_ENGINE_MOD_LIST}"
-  cp ${FLARE_GAME}/CREDITS.txt ${DST}
-  cp ${FLARE_GAME}/LICENSE.txt ${DST}
-fi
+dylibbundler -cd -b -x "${DST}/Contents/MacOS/flare.orig" \
+    -d "${DST}/Contents/Frameworks/" \
+    -p @executable_path/../Frameworks/
 
-echo '#!/bin/sh' >> ${DST}/start.sh
-echo 'cd "$(dirname "${BASH_SOURCE[0]}")"' >> ${DST}/start.sh
-echo 'DYLD_LIBRARY_PATH=./lib ./flare'  >> ${DST}/start.sh
-chmod +x ${DST}/start.sh
-
-echo "packaging"
-tar -zcf flare_osx.tar.gz -C ${DST} .
-rm -fr ${DST}
-echo "done"
+echo "App bundle created successfully at ${DST}"
