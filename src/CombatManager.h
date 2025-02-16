@@ -90,7 +90,6 @@ public:
     bool canTakeAction() const;
     bool isValidMovement(const FPoint& dest) const;
     void startMovement();
-    void completeMovement(const FPoint& dest);
     bool performAction(ActionType action);
     float getMovementRange() const;
     const TurnState& getCurrentTurnState() const { return turn_state; }

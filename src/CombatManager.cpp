@@ -318,12 +318,25 @@ bool CombatManager::isValidMovement(const FPoint& dest) const {
     }
 
     // Check if path is clear (no obstacles or other entities)
-    return mapr->collider.lineOfSight(
+    if (!mapr->collider.lineOfMovement(
         turn_state.movement_start.x,
         turn_state.movement_start.y,
         dest.x,
-        dest.y
-    );
+        dest.y,
+        current->stats.movement_type))
+    {
+        return false;
+    }
+
+    // Check if destination tile is valid for this entity's movement type
+    if (!mapr->collider.isValidPosition(dest.x, dest.y, 
+        current->stats.movement_type, 
+        mapr->collider.getCollideType(current->stats.hero)))
+    {
+        return false;
+    }
+
+    return true;
 }
 
 void CombatManager::startMovement() {
@@ -332,28 +345,8 @@ void CombatManager::startMovement() {
     Entity* current = getCurrentTurnEntity();
     if (!current) return;
 
-    // Only set the movement start position if this is a new movement action
-    if (turn_state.last_action != ACTION_MOVE) {
-        turn_state.movement_start = current->stats.pos;
-    }
-}
-
-void CombatManager::completeMovement(const FPoint& dest) {
-    if (!isValidMovement(dest)) return;
-
-    Entity* current = getCurrentTurnEntity();
-    if (!current) return;
-
-    // Update entity position
-    current->stats.pos = dest;
-    turn_state.last_action = ACTION_MOVE;
-    spendAction();
-
-    // Log movement
-    if (menu && menu->hudlog) {
-        std::string name = current->stats.hero ? msg->get("You") : current->stats.name;
-        menu->hudlog->add(name + msg->get(" moved."), MenuHUDLog::MSG_NORMAL);
-    }
+    // Always update movement_start to the current position so that every move action is relative to the latest location
+    turn_state.movement_start = current->stats.pos;
 }
 
 bool CombatManager::performAction(ActionType action) {

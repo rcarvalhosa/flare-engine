@@ -380,8 +380,13 @@ void Avatar::handleMouseMoveDirection() {
         
         // Special handling for combat movement
         if (stats.in_combat) {
-            if (!isValidCombatMove(target_pos))
+			if(!combat_manager->isValidMovement(target_pos)) {
                 return;
+			}
+			else {
+				combat_manager->startMovement();
+				combat_manager->spendAction();
+			}
         }
 
         // Set movement target if position is valid
@@ -410,43 +415,6 @@ void Avatar::handleMouseMoveDirection() {
                                          mm_target.x, mm_target.y);
 }
 
-bool Avatar::isValidCombatMove(const FPoint& target_pos) {
-     // Can't start new movement if not player's turn or no actions available
-    if (path.empty() && (!combat_manager || !combat_manager->canTakeAction() || 
-        !combat_manager->isPlayerTurn())) {
-        mm_target = stats.pos;
-        return false;
-    }
-
-    float dist = Utils::calcDist(stats.pos, target_pos);
-    
-    // Starting new movement
-    if (combat_manager->getTurnState().actions_remaining > 0 && path.empty()) {
-        // Check 6 tile movement limit
-        if (dist > 6.0f) {
-            mm_target = stats.pos;
-            return false;
-        }
-        
-        combat_manager->startMovement();
-        combat_manager->spendAction();
-        return true;
-    }
-    
-    // Continuing existing movement
-    if (!path.empty()) {
-        float dist_from_start = Utils::calcDist(
-            combat_manager->getTurnState().movement_start, target_pos);
-        if (dist_from_start > 6.0f) {
-            mm_target = stats.pos;
-            return false;
-        }
-        return true;
-    }
-
-    mm_target = stats.pos;
-    return false;
-}
 
 
 void Avatar::handlePathfinding() {
