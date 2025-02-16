@@ -312,7 +312,7 @@ bool CombatManager::isValidMovement(const FPoint& dest) const {
     if (!current) return false;
 
     // Check if destination is within movement range from turn start position
-    float dist = Utils::calcDist(turn_state.movement_start, dest);
+    float dist = Utils::calcDist(current->stats.pos, dest);
     if (dist > getMovementRange()) {
         return false;
     }

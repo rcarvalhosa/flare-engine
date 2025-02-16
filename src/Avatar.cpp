@@ -46,7 +46,6 @@ FLARE.  If not, see http://www.gnu.org/licenses/
 #include "MessageEngine.h"
 #include "MenuMiniMap.h"
 #include "ModManager.h"
-#include "PowerManager.h"
 #include "RenderDevice.h"
 #include "SaveLoad.h"
 #include "Settings.h"
@@ -543,55 +542,100 @@ void Avatar::updateDirectionTimer(int old_dir) {
 }
 
 /**
- * logic()
- * Handle a single frame.  This includes:
- * - move the avatar based on buttons pressed
- * - calculate the next frame of animation
- * - calculate camera position based on avatar position
+ * Main logic function called each frame to handle the avatar's state and actions
+ * Handles movement, powers, animations, and status changes
  */
 void Avatar::logic() {
-	bool restrict_power_use = false;
+	handlePowerRestrictions();
+	handleBasicState();
+	handleLowHealthEffects();
+	handleLevelUp();
+	handleMouseMovement();
+	handleAnimations();
+	handleTransformState();
+	handleStateChanges();
+	handleCameraAndCooldowns();
+}
+
+/**
+ * Determines if power usage should be restricted based on settings
+ */
+void Avatar::handlePowerRestrictions() {
+	
 	if (settings->mouse_move) {
-		if(inpt->pressing[mm_key] && !inpt->pressing[Input::SHIFT] && !menu->act->isWithinSlots(inpt->mouse) && !menu->act->isWithinMenus(inpt->mouse)) {
+		if(inpt->pressing[mm_key] && !inpt->pressing[Input::SHIFT] && 
+		   !menu->act->isWithinSlots(inpt->mouse) && 
+		   !menu->act->isWithinMenus(inpt->mouse)) {
 			restrict_power_use = true;
 		}
 	}
+}
 
+/**
+ * Handles basic state setup and passive powers
+ */
+void Avatar::handleBasicState() {
 	// clear current space to allow correct movement
 	mapr->collider.unblock(stats.pos.x, stats.pos.y);
 
-	// turn on all passive powers
-	if ((stats.hp > 0 || stats.effects.triggered_death) && !respawn && !transform_triggered)
+	// turn on all passive powers if alive and not transforming
+	if ((stats.hp > 0 || stats.effects.triggered_death) && !respawn && !transform_triggered) {
 		powers->activatePassives(&stats);
+	}
 
-	if (transform_triggered)
+	if (transform_triggered) {
 		transform_triggered = false;
+	}
 
 	// handle when the player stops blocking
 	if (stats.effects.triggered_block && !stats.blocking) {
-		stats.cur_state = StatBlock::ENTITY_STANCE;
-		stats.effects.triggered_block = false;
-		stats.effects.clearTriggerEffects(Power::TRIGGER_BLOCK);
-		stats.refresh_stats = true;
-		stats.block_power = 0;
+		resetBlockState();
 	}
 
 	stats.logic();
+}
 
-	// alert on low health
+/**
+ * Resets the blocking state and related effects
+ */
+void Avatar::resetBlockState() {
+	stats.cur_state = StatBlock::ENTITY_STANCE;
+	stats.effects.triggered_block = false;
+	stats.effects.clearTriggerEffects(Power::TRIGGER_BLOCK);
+	stats.refresh_stats = true;
+	stats.block_power = 0;
+}
+
+/**
+ * Handles low HP alerts and sound effects
+ */
+void Avatar::handleLowHealthEffects() {
 	if (isDroppedToLowHp()) {
-		// show message if set
 		if (isLowHpMessageEnabled()) {
 			logMsg(msg->get("Your health is low!"), MSG_NORMAL);
 		}
-		// play a sound if set in settings
-		if (isLowHpSoundEnabled() && !playing_lowhp) {
-			// if looping, then do not cleanup
-			snd->play(sound_lowhp, "lowhp", snd->NO_POS, stats.sfx_lowhp_loop, !stats.sfx_lowhp_loop);
-			playing_lowhp = true;
-		}
+		handleLowHpSound();
 	}
-	// if looping, stop sounds when HP recovered above threshold
+	else {
+		updateLowHpSound();
+	}
+	prev_hp = stats.hp;
+}
+
+/**
+ * Plays or stops the low HP warning sound based on current state
+ */
+void Avatar::handleLowHpSound() {
+	if (isLowHpSoundEnabled() && !playing_lowhp) {
+		snd->play(sound_lowhp, "lowhp", snd->NO_POS, stats.sfx_lowhp_loop, !stats.sfx_lowhp_loop);
+		playing_lowhp = true;
+	}
+}
+
+/**
+ * Updates the low HP sound state based on current HP
+ */
+void Avatar::updateLowHpSound() {
 	if (isLowHpSoundEnabled() && !isLowHp() && playing_lowhp && stats.sfx_lowhp_loop) {
 		snd->pauseChannel("lowhp");
 		playing_lowhp = false;
@@ -604,42 +648,139 @@ void Avatar::logic() {
 		snd->pauseChannel("lowhp");
 		playing_lowhp = false;
 	}
+}
 
-	// we can not use stats.prev_hp here
-	prev_hp = stats.hp;
+/**
+ * Handles level up logic and notifications
+ */
+void Avatar::handleLevelUp() {
+	if (!shouldLevelUp())
+		return;
 
-	// check level up
-	if (stats.level < eset->xp.getMaxLevel() && stats.xp >= eset->xp.getLevelXP(stats.level + 1)) {
-		stats.level_up = true;
-		stats.level = eset->xp.getLevelFromXP(stats.xp);
-		logMsg(msg->getv("Congratulations, you have reached level %d!", stats.level), MSG_NORMAL);
-		if (pc->stats.stat_points_per_level > 0) {
-			logMsg(msg->get("You may increase one or more attributes through the Character Menu."), MSG_NORMAL);
-			newLevelNotification = true;
-		}
-		if (pc->stats.power_points_per_level > 0) {
-			logMsg(msg->get("You may unlock one or more abilities through the Powers Menu."), MSG_NORMAL);
-		}
-		stats.recalc();
-		snd->play(sound_levelup, snd->DEFAULT_CHANNEL, snd->NO_POS, !snd->LOOP);
+	performLevelUp();
+}
 
-		// if the player managed to level up while dead (e.g. via a bleeding creature), restore to life
-		if (stats.cur_state == StatBlock::ENTITY_DEAD) {
-			stats.cur_state = StatBlock::ENTITY_STANCE;
-		}
+/**
+ * Checks if conditions for level up are met
+ */
+bool Avatar::shouldLevelUp() {
+	return stats.level < eset->xp.getMaxLevel() && 
+		   stats.xp >= eset->xp.getLevelXP(stats.level + 1);
+}
+
+/**
+ * Performs the level up and shows appropriate notifications
+ */
+void Avatar::performLevelUp() {
+	stats.level_up = true;
+	stats.level = eset->xp.getLevelFromXP(stats.xp);
+	
+	logMsg(msg->getv("Congratulations, you have reached level %d!", stats.level), MSG_NORMAL);
+	
+	if (pc->stats.stat_points_per_level > 0) {
+		logMsg(msg->get("You may increase one or more attributes through the Character Menu."), MSG_NORMAL);
+		newLevelNotification = true;
 	}
+	
+	if (pc->stats.power_points_per_level > 0) {
+		logMsg(msg->get("You may unlock one or more abilities through the Powers Menu."), MSG_NORMAL);
+	}
+	
+	stats.recalc();
+	snd->play(sound_levelup, snd->DEFAULT_CHANNEL, snd->NO_POS, !snd->LOOP);
 
-	// assist mouse movement
+	// revive if leveled up while dead
+	if (stats.cur_state == StatBlock::ENTITY_DEAD) {
+		stats.cur_state = StatBlock::ENTITY_STANCE;
+	}
+}
+
+/**
+ * Handles mouse movement and targeting
+ */
+void Avatar::handleMouseMovement() {
 	mm_key = settings->mouse_move_swap ? Input::MAIN2 : Input::MAIN1;
+	
 	if (!inpt->pressing[mm_key]) {
 		drag_walking = false;
 	}
 
-	// block some interactions when attacking/moving
 	using_main1 = inpt->pressing[Input::MAIN1] && !inpt->lock[Input::MAIN1];
 	using_main2 = inpt->pressing[Input::MAIN2] && !inpt->lock[Input::MAIN2];
 
-	// handle animation
+	if (settings->mouse_move) {
+		handleMouseTargeting();
+	}
+}
+
+/**
+ * Handles mouse targeting and movement
+ */
+void Avatar::handleMouseTargeting() {
+	if (inpt->pressing[mm_key]) {
+		updateMouseDistance();
+		handleMouseLock();
+	}
+
+	updateLockedEnemy();
+	
+	if (teleport_camera_lock && Utils::calcDist(stats.pos, mapr->cam.pos) < 0.5f) {
+		teleport_camera_lock = false;
+	}
+}
+
+/**
+ * Updates distance check for mouse movement
+ */
+void Avatar::updateMouseDistance() {
+	FPoint target = Utils::screenToMap(inpt->mouse.x, inpt->mouse.y, mapr->cam.pos.x, mapr->cam.pos.y);
+	if (stats.cur_state == StatBlock::ENTITY_MOVE) {
+		mm_is_distant = Utils::calcDist(stats.pos, target) >= eset->misc.mouse_move_deadzone_moving;
+	}
+	else {
+		mm_is_distant = Utils::calcDist(stats.pos, target) >= eset->misc.mouse_move_deadzone_not_moving;
+	}
+}
+
+/**
+ * Handles mouse lock for targeting
+ */
+void Avatar::handleMouseLock() {
+	if (!inpt->lock[mm_key]) {
+		if (settings->mouse_move_attack && cursor_enemy && !cursor_enemy->stats.hero_ally) {
+			inpt->lock[mm_key] = true;
+			lock_enemy = cursor_enemy;
+			mm_target_object = MM_TARGET_ENTITY;
+		}
+
+		if (!cursor_enemy) {
+			lock_enemy = NULL;
+			if (mm_target_object == MM_TARGET_ENTITY)
+				mm_target_object = MM_TARGET_NONE;
+		}
+	}
+}
+
+/**
+ * Updates locked enemy status
+ */
+void Avatar::updateLockedEnemy() {
+	if (lock_enemy) {
+		if (lock_enemy->stats.hp <= 0) {
+			lock_enemy = NULL;
+			mm_target_object = MM_TARGET_NONE;
+		}
+		else {
+			mm_target_object_pos = lock_enemy->stats.pos;
+			setDesiredMMTarget(mm_target_object_pos);
+		}
+	}
+}
+
+/**
+ * Handles animations
+ */
+void Avatar::handleAnimations() {
 	if (!stats.effects.stun) {
 		if (activeAnimation)
 			activeAnimation->advanceFrame();
@@ -649,271 +790,304 @@ void Avatar::logic() {
 				anims[i]->advanceFrame();
 		}
 	}
+}
 
-	// save a valid tile position in the event that we untransform on an invalid tile
-	if (stats.transformed && mapr->collider.isValidPosition(stats.pos.x, stats.pos.y, MapCollision::MOVE_NORMAL, MapCollision::ENTITY_COLLIDE_HERO)) {
+/**
+ * Handles transform state
+ */
+void Avatar::handleTransformState() {
+	if (stats.transformed && mapr->collider.isValidPosition(stats.pos.x, stats.pos.y, 
+		MapCollision::MOVE_NORMAL, MapCollision::ENTITY_COLLIDE_HERO)) {
 		transform_pos = stats.pos;
 		transform_map = mapr->getFilename();
 	}
+}
 
-	if (settings->mouse_move) {
-		if (inpt->pressing[mm_key]) {
-			// prevents erratic behavior when mouse move is too close to player
-			FPoint target = Utils::screenToMap(inpt->mouse.x, inpt->mouse.y, mapr->cam.pos.x, mapr->cam.pos.y);
-			if (stats.cur_state == StatBlock::ENTITY_MOVE) {
-				mm_is_distant = Utils::calcDist(stats.pos, target) >= eset->misc.mouse_move_deadzone_moving;
-			}
-			else {
-				mm_is_distant = Utils::calcDist(stats.pos, target) >= eset->misc.mouse_move_deadzone_not_moving;
-			}
-
-			if (!inpt->lock[mm_key]) {
-				if (settings->mouse_move_attack && cursor_enemy && !cursor_enemy->stats.hero_ally) {
-					inpt->lock[mm_key] = true;
-					lock_enemy = cursor_enemy;
-					mm_target_object = MM_TARGET_ENTITY;
-				}
-
-				if (!cursor_enemy) {
-					lock_enemy = NULL;
-					if (mm_target_object == MM_TARGET_ENTITY)
-						mm_target_object = MM_TARGET_NONE;
-				}
-			}
-		}
-
-		if (lock_enemy) {
-			if (lock_enemy->stats.hp <= 0) {
-				lock_enemy = NULL;
-				mm_target_object = MM_TARGET_NONE;
-			}
-			else {
-				mm_target_object_pos = lock_enemy->stats.pos;
-				setDesiredMMTarget(mm_target_object_pos);
-			}
-		}
-	}
-
-	if (teleport_camera_lock && Utils::calcDist(stats.pos, mapr->cam.pos) < 0.5f) {
-		teleport_camera_lock = false;
-	}
-
+/**
+ * Handles state changes and related logic
+ */
+void Avatar::handleStateChanges() {
 	set_dir_timer.tick();
 	if (!pressing_move()) {
 		set_dir_timer.reset(Timer::END);
 	}
 
 	if (!stats.effects.stun) {
-		bool allowed_to_move;
-		bool allowed_to_turn;
+		handleActionQueue();
+		handleCurrentState();
+	}
+}
 
-		stats.blocking = false;
+/**
+ * Processes the action queue
+ */
+void Avatar::handleActionQueue() {
+	for (unsigned i=0; i<action_queue.size(); i++) {
+		ActionData &action = action_queue[i];
+		PowerID replaced_id = powers->checkReplaceByEffect(action.power, &stats);
+		if (replaced_id == 0)
+			continue;
 
-		for (unsigned i=0; i<action_queue.size(); i++) {
-			ActionData &action = action_queue[i];
-			PowerID replaced_id = powers->checkReplaceByEffect(action.power, &stats);
-			if (replaced_id == 0)
-				continue;
+		handleReplacedPower(replaced_id, action);
+	}
+	action_queue.clear();
+}
 
-			Power* power = powers->powers[replaced_id];
+/**
+ * Handles a power that was replaced by an effect
+ */
+void Avatar::handleReplacedPower(PowerID replaced_id, const ActionData& action) {
+	Power* power = powers->powers[replaced_id];
 
-			if (power->new_state == Power::STATE_INSTANT) {
-				// instant power, so no need to switch animation state
-				FPoint target = action.target;
-				beginPower(replaced_id, &target);
-				powers->activate(replaced_id, &stats, stats.pos, target);
-				power_cooldown_timers[action.power]->setDuration(power->cooldown);
-				power_cooldown_timers[replaced_id]->setDuration(power->cooldown);
+	if (power->new_state == Power::STATE_INSTANT) {
+		handleInstantPower(replaced_id, action);
+	}
+	else if (stats.cur_state == StatBlock::ENTITY_BLOCK) {
+		handleBlockingPower(replaced_id, action, power);
+	}
+	else if (stats.cur_state == StatBlock::ENTITY_STANCE || 
+			 stats.cur_state == StatBlock::ENTITY_MOVE) {
+		handleStanceMovePower(replaced_id, action, power);
+	}
+}
+
+/**
+ * Handles an instant power
+ */
+void Avatar::handleInstantPower(PowerID replaced_id, const ActionData& action) {
+	FPoint target = action.target;
+	beginPower(replaced_id, &target);
+	powers->activate(replaced_id, &stats, stats.pos, target);
+	power_cooldown_timers[action.power]->setDuration(powers->powers[replaced_id]->cooldown);
+	power_cooldown_timers[replaced_id]->setDuration(powers->powers[replaced_id]->cooldown);
+}
+
+/**
+ * Handles a power while blocking
+ */
+void Avatar::handleBlockingPower(PowerID replaced_id, const ActionData& action, Power* power) {
+	if (power->type == Power::TYPE_BLOCK) {
+		current_power = replaced_id;
+		current_power_original = action.power;
+		act_target = action.target;
+		attack_anim = power->attack_anim;
+
+		stats.cur_state = StatBlock::ENTITY_BLOCK;
+		beginPower(replaced_id, &act_target);
+		powers->activate(replaced_id, &stats, stats.pos, act_target);
+		stats.refresh_stats = true;
+	}
+}
+
+/**
+ * Handles a power while in stance or move state
+ */
+void Avatar::handleStanceMovePower(PowerID replaced_id, const ActionData& action, Power* power) {
+	current_power = replaced_id;
+	current_power_original = action.power;
+	act_target = action.target;
+	attack_anim = power->attack_anim;
+	resetActiveAnimation();
+
+	if (power->new_state == Power::STATE_ATTACK) {
+		stats.cur_state = StatBlock::ENTITY_POWER;
+	}
+	else if (power->type == Power::TYPE_BLOCK) {
+		stats.cur_state = StatBlock::ENTITY_BLOCK;
+		beginPower(replaced_id, &act_target);
+		powers->activate(replaced_id, &stats, stats.pos, act_target);
+		stats.refresh_stats = true;
+	}
+}
+
+/**
+ * Handles the current state
+ */
+void Avatar::handleCurrentState() {
+	switch(stats.cur_state) {
+		case StatBlock::ENTITY_STANCE:
+			handleStanceState();
+			break;
+		case StatBlock::ENTITY_MOVE:
+			handleMoveState();
+			break;
+		case StatBlock::ENTITY_POWER:
+			handlePowerState();
+			break;
+		case StatBlock::ENTITY_BLOCK:
+			handleBlockState();
+			break;
+		case StatBlock::ENTITY_HIT:
+			handleHitState();
+			break;
+		case StatBlock::ENTITY_DEAD:
+			handleDeadState();
+			break;
+		default:
+			break;
+	}
+}
+
+/**
+ * Handles the stance state
+ */
+void Avatar::handleStanceState() {
+	bool allowed_to_move;
+	bool allowed_to_turn;
+	
+	setAnimation("stance");
+
+	// allowed to move or use powers?
+	if (settings->mouse_move) {
+		allowed_to_move = restrict_power_use && (!inpt->lock[mm_key] || drag_walking);
+		allowed_to_turn = allowed_to_move;
+
+		if ((inpt->pressing[mm_key] && inpt->pressing[Input::SHIFT])) {
+			inpt->lock[mm_key] = false;
+		}
+	}
+	else if (!settings->mouse_aim) {
+		allowed_to_move = !inpt->pressing[Input::SHIFT];
+		allowed_to_turn = true;
+	}
+	else {
+		allowed_to_move = true;
+		allowed_to_turn = true;
+	}
+
+	// handle transitions to RUN
+	if (allowed_to_turn)
+		set_direction();
+
+	if (pressing_move() && allowed_to_move) {
+		if (move()) { // no collision
+			if (settings->mouse_move && inpt->pressing[mm_key]) {
+				drag_walking = true;
 			}
-			else if (stats.cur_state == StatBlock::ENTITY_BLOCK) {
-				// special case in order to continue blocking
-				if (power->type == Power::TYPE_BLOCK) {
-					current_power = replaced_id;
-					current_power_original = action.power;
-					act_target = action.target;
-					attack_anim = power->attack_anim;
 
-					stats.cur_state = StatBlock::ENTITY_BLOCK;
-					beginPower(replaced_id, &act_target);
-					powers->activate(replaced_id, &stats, stats.pos, act_target);
-					stats.refresh_stats = true;
-				}
+			stats.cur_state = StatBlock::ENTITY_MOVE;
+
+			mm_target_object = MM_TARGET_NONE;
+		}
+	}
+}
+
+/**
+ * Handles the move state
+ */
+void Avatar::handleMoveState() {
+	setAnimation("run");
+
+	if (!sound_steps.empty()) {
+		int stepfx = rand() % static_cast<int>(sound_steps.size());
+
+		if (activeAnimation->isFirstFrame() || activeAnimation->isActiveFrame())
+			snd->play(sound_steps[stepfx], snd->DEFAULT_CHANNEL, snd->NO_POS, !snd->LOOP);
+	}
+
+	// handle direction changes
+	set_direction();
+
+	// handle transition to STANCE
+	if (!pressing_move()) {
+		stats.cur_state = StatBlock::ENTITY_STANCE;
+		//break;
+	}
+	else if (!move()) { // collide with wall
+		if (settings->mouse_move && !isNearMMtarget()) {
+			collided = true;
+		}
+		stats.cur_state = StatBlock::ENTITY_STANCE;
+		//break;
+	}
+	else if ((settings->mouse_move || !settings->mouse_aim) && inpt->pressing[Input::SHIFT]) {
+		// Shift should stop movement in some cases.
+		// With mouse_move, it allows the player to stop moving and begin attacking.
+		// With mouse_aim disabled, it allows the player to aim their attacks without having to move.
+		stats.cur_state = StatBlock::ENTITY_STANCE;
+		//break;
+	}
+
+	if (settings->mouse_move && inpt->pressing[mm_key]) {
+		drag_walking = true;
+	}
+
+	if (activeAnimation->getName() != "run")
+		stats.cur_state = StatBlock::ENTITY_STANCE;
+}
+
+/**
+ * Handles the power state
+ */
+void Avatar::handlePowerState() {
+	setAnimation(attack_anim);
+
+	if (powers->isValid(current_power)) {
+		Power* power = powers->powers[current_power];
+
+		// if the player is attacking, show the attack cursor
+		if (!power->buff && !power->buff_teleport &&
+			power->type != Power::TYPE_TRANSFORM &&
+			power->type != Power::TYPE_BLOCK &&
+			!(power->starting_pos == Power::STARTING_POS_SOURCE && power->speed == 0)
+		) {
+			curs->setCursor(CursorManager::CURSOR_ATTACK);
+		}
+
+		if (activeAnimation->isFirstFrame()) {
+			beginPower(current_power, &act_target);
+			float attack_speed = (stats.effects.getAttackSpeed(attack_anim) * power->attack_speed) / 100.0f;
+			activeAnimation->setSpeed(attack_speed);
+			for (size_t i=0; i<anims.size(); ++i) {
+				if (anims[i])
+					anims[i]->setSpeed(attack_speed);
 			}
-			else if (stats.cur_state == StatBlock::ENTITY_STANCE || stats.cur_state == StatBlock::ENTITY_MOVE) {
-				// this power has an animation, so prepare to switch to it
-				current_power = replaced_id;
-				current_power_original = action.power;
-				act_target = action.target;
-				attack_anim = power->attack_anim;
-				resetActiveAnimation();
+			playAttackSound(attack_anim);
+			power_cast_timers[current_power]->setDuration(activeAnimation->getDuration());
+			power_cast_timers[current_power_original]->setDuration(activeAnimation->getDuration()); // for replace_by_effect
 
-				if (power->new_state == Power::STATE_ATTACK) {
-					stats.cur_state = StatBlock::ENTITY_POWER;
-				}
-				else if (power->type == Power::TYPE_BLOCK) {
-					stats.cur_state = StatBlock::ENTITY_BLOCK;
-					beginPower(replaced_id, &act_target);
-					powers->activate(replaced_id, &stats, stats.pos, act_target);
-					stats.refresh_stats = true;
-				}
+			// In combat, spend an action when starting a power
+			if (stats.in_combat && combat_manager) {
+				combat_manager->spendAction();
 			}
 		}
 
-		action_queue.clear();
+		// do power
+		if (activeAnimation->isActiveFrame() && !stats.hold_state) {
+			// some powers check if the caster is blocking a tile
+			// so we block the player tile prematurely here
+			mapr->collider.block(stats.pos.x, stats.pos.y, !MapCollision::IS_ALLY);
 
-		switch(stats.cur_state) {
-			case StatBlock::ENTITY_STANCE:
+			powers->activate(current_power, &stats, stats.pos, act_target);
+			power_cooldown_timers[current_power]->setDuration(power->cooldown);
+			power_cooldown_timers[current_power_original]->setDuration(power->cooldown); // for replace_by_effect
 
-				setAnimation("stance");
+			if (!stats.state_timer.isEnd())
+				stats.hold_state = true;
+		}
+	}
 
-				// allowed to move or use powers?
-				if (settings->mouse_move) {
-					allowed_to_move = restrict_power_use && (!inpt->lock[mm_key] || drag_walking);
-					allowed_to_turn = allowed_to_move;
+	// animation is done, switch back to normal stance
+	if ((activeAnimation->isLastFrame() && stats.state_timer.isEnd()) || activeAnimation->getName() != attack_anim) {
+		stats.cur_state = StatBlock::ENTITY_STANCE;
+		stats.cooldown.reset(Timer::BEGIN);
+		stats.prevent_interrupt = false;
+	}
+}
 
-					if ((inpt->pressing[mm_key] && inpt->pressing[Input::SHIFT])) {
-						inpt->lock[mm_key] = false;
-					}
-				}
-				else if (!settings->mouse_aim) {
-					allowed_to_move = !inpt->pressing[Input::SHIFT];
-					allowed_to_turn = true;
-				}
-				else {
-					allowed_to_move = true;
-					allowed_to_turn = true;
-				}
+/**
+ * Handles the block state
+ */
+void Avatar::handleBlockState() {
+	setAnimation("block");
+}
 
-				// handle transitions to RUN
-				if (allowed_to_turn)
-					set_direction();
-
-				if (pressing_move() && allowed_to_move) {
-					if (move()) { // no collision
-						if (settings->mouse_move && inpt->pressing[mm_key]) {
-							drag_walking = true;
-						}
-
-						stats.cur_state = StatBlock::ENTITY_MOVE;
-
-						mm_target_object = MM_TARGET_NONE;
-					}
-				}
-
-				break;
-
-			case StatBlock::ENTITY_MOVE:
-
-				setAnimation("run");
-
-				if (!sound_steps.empty()) {
-					int stepfx = rand() % static_cast<int>(sound_steps.size());
-
-					if (activeAnimation->isFirstFrame() || activeAnimation->isActiveFrame())
-						snd->play(sound_steps[stepfx], snd->DEFAULT_CHANNEL, snd->NO_POS, !snd->LOOP);
-				}
-
-				// handle direction changes
-				set_direction();
-
-				// handle transition to STANCE
-				if (!pressing_move()) {
-					stats.cur_state = StatBlock::ENTITY_STANCE;
-					break;
-				}
-				else if (!move()) { // collide with wall
-					if (settings->mouse_move && !isNearMMtarget()) {
-						collided = true;
-					}
-					stats.cur_state = StatBlock::ENTITY_STANCE;
-					break;
-				}
-				else if ((settings->mouse_move || !settings->mouse_aim) && inpt->pressing[Input::SHIFT]) {
-					// Shift should stop movement in some cases.
-					// With mouse_move, it allows the player to stop moving and begin attacking.
-					// With mouse_aim disabled, it allows the player to aim their attacks without having to move.
-					stats.cur_state = StatBlock::ENTITY_STANCE;
-					break;
-				}
-
-				if (settings->mouse_move && inpt->pressing[mm_key]) {
-					drag_walking = true;
-				}
-
-				if (activeAnimation->getName() != "run")
-					stats.cur_state = StatBlock::ENTITY_STANCE;
-
-				break;
-
-			case StatBlock::ENTITY_POWER:
-
-				setAnimation(attack_anim);
-
-				if (powers->isValid(current_power)) {
-					Power* power = powers->powers[current_power];
-
-					// if the player is attacking, show the attack cursor
-					if (!power->buff && !power->buff_teleport &&
-						power->type != Power::TYPE_TRANSFORM &&
-						power->type != Power::TYPE_BLOCK &&
-						!(power->starting_pos == Power::STARTING_POS_SOURCE && power->speed == 0)
-					) {
-						curs->setCursor(CursorManager::CURSOR_ATTACK);
-					}
-
-					if (activeAnimation->isFirstFrame()) {
-						beginPower(current_power, &act_target);
-						float attack_speed = (stats.effects.getAttackSpeed(attack_anim) * power->attack_speed) / 100.0f;
-						activeAnimation->setSpeed(attack_speed);
-						for (size_t i=0; i<anims.size(); ++i) {
-							if (anims[i])
-								anims[i]->setSpeed(attack_speed);
-						}
-						playAttackSound(attack_anim);
-						power_cast_timers[current_power]->setDuration(activeAnimation->getDuration());
-						power_cast_timers[current_power_original]->setDuration(activeAnimation->getDuration()); // for replace_by_effect
-
-						// In combat, spend an action when starting a power
-						if (stats.in_combat && combat_manager) {
-							combat_manager->spendAction();
-						}
-					}
-
-					// do power
-					if (activeAnimation->isActiveFrame() && !stats.hold_state) {
-						// some powers check if the caster is blocking a tile
-						// so we block the player tile prematurely here
-						mapr->collider.block(stats.pos.x, stats.pos.y, !MapCollision::IS_ALLY);
-
-						powers->activate(current_power, &stats, stats.pos, act_target);
-						power_cooldown_timers[current_power]->setDuration(power->cooldown);
-						power_cooldown_timers[current_power_original]->setDuration(power->cooldown); // for replace_by_effect
-
-						if (!stats.state_timer.isEnd())
-							stats.hold_state = true;
-					}
-				}
-
-				// animation is done, switch back to normal stance
-				if ((activeAnimation->isLastFrame() && stats.state_timer.isEnd()) || activeAnimation->getName() != attack_anim) {
-					stats.cur_state = StatBlock::ENTITY_STANCE;
-					stats.cooldown.reset(Timer::BEGIN);
-					stats.prevent_interrupt = false;
-				}
-
-				break;
-
-			case StatBlock::ENTITY_BLOCK:
-
-				setAnimation("block");
-
-				break;
-
-			case StatBlock::ENTITY_HIT:
-
-				setAnimation("hit");
-
-				if (activeAnimation->isFirstFrame()) {
+/**
+ * Handles the hit state
+ */
+void Avatar::handleHitState() {
+	setAnimation("hit");
+	if (activeAnimation->isFirstFrame()) {
 					stats.effects.triggered_hit = true;
 
 					if (powers->isValid(stats.block_power)) {
@@ -926,88 +1100,92 @@ void Avatar::logic() {
 					stats.cur_state = StatBlock::ENTITY_STANCE;
 				}
 
-				break;
+}
 
-			case StatBlock::ENTITY_DEAD:
-				if (stats.effects.triggered_death) break;
-
-				if (stats.transformed) {
-					stats.transform_duration = 0;
-					untransform();
-				}
-
-				setAnimation("die");
-
-				if (!stats.corpse && activeAnimation->isFirstFrame() && activeAnimation->getTimesPlayed() < 1) {
-					stats.effects.clearEffects();
-					stats.powers_passive.clear();
-
-					// reset power cooldowns
-					std::map<size_t, Timer>::iterator pct_it;
-					for (size_t i = 0; i < power_cooldown_timers.size(); ++i) {
-						if (power_cooldown_timers[i])
-							power_cooldown_timers[i]->reset(Timer::END);
-						if (power_cast_timers[i])
-							power_cast_timers[i]->reset(Timer::END);
-					}
-
-					// close menus in GameStatePlay
-					close_menus = true;
-
-					playSound(Entity::SOUND_DIE);
-
-					logMsg(msg->get("You are defeated."), MSG_NORMAL);
-
-					if (stats.permadeath) {
-						// ignore death penalty on permadeath and instead delete the player's saved game
-						stats.death_penalty = false;
-						Utils::removeSaveDir(save_load->getGameSlot());
-						menu->exit->disableSave();
-						menu->game_over->disableSave();
-					}
-					else {
-						// raise the death penalty flag.  This is handled in MenuInventory
-						stats.death_penalty = true;
-					}
-
-					// if the player is attacking, we need to block further input
-					if (inpt->pressing[Input::MAIN1])
-						inpt->lock[Input::MAIN1] = true;
-				}
-
-				if (!stats.corpse && (activeAnimation->getTimesPlayed() >= 1 || activeAnimation->getName() != "die")) {
-					stats.corpse = true;
-					menu->game_over->visible = true;
-				}
-
-				// allow respawn with Accept if not permadeath
-				if (menu->game_over->visible && menu->game_over->continue_clicked) {
-					menu->game_over->close();
-
-					mapr->teleportation = true;
-					mapr->teleport_mapname = mapr->respawn_map;
-
-					if (stats.permadeath) {
-						// set these positions so it doesn't flash before jumping to Title
-						mapr->teleport_destination.x = stats.pos.x;
-						mapr->teleport_destination.y = stats.pos.y;
-					}
-					else {
-						respawn = true;
-
-						// set teleportation variables.  GameEngine acts on these.
-						mapr->teleport_destination.x = mapr->respawn_point.x;
-						mapr->teleport_destination.y = mapr->respawn_point.y;
-					}
-				}
-
-				break;
-
-			default:
-				break;
-		}
+/**
+ * Handles the dead state
+ */
+void Avatar::handleDeadState() {
+	if (stats.effects.triggered_death) {
+		//break;
 	}
 
+	if (stats.transformed) {
+		stats.transform_duration = 0;
+		untransform();
+	}
+
+	setAnimation("die");
+
+	if (!stats.corpse && activeAnimation->isFirstFrame() && activeAnimation->getTimesPlayed() < 1) {
+		stats.effects.clearEffects();
+		stats.powers_passive.clear();
+
+		// reset power cooldowns
+		std::map<size_t, Timer>::iterator pct_it;
+		for (size_t i = 0; i < power_cooldown_timers.size(); ++i) {
+			if (power_cooldown_timers[i])
+				power_cooldown_timers[i]->reset(Timer::END);
+			if (power_cast_timers[i])
+				power_cast_timers[i]->reset(Timer::END);
+		}
+
+		// close menus in GameStatePlay
+		close_menus = true;
+
+		playSound(Entity::SOUND_DIE);
+
+		logMsg(msg->get("You are defeated."), MSG_NORMAL);
+
+		if (stats.permadeath) {
+			// ignore death penalty on permadeath and instead delete the player's saved game
+			stats.death_penalty = false;
+			Utils::removeSaveDir(save_load->getGameSlot());
+			menu->exit->disableSave();
+			menu->game_over->disableSave();
+		}
+		else {
+			// raise the death penalty flag.  This is handled in MenuInventory
+			stats.death_penalty = true;
+		}
+
+		// if the player is attacking, we need to block further input
+		if (inpt->pressing[Input::MAIN1])
+			inpt->lock[Input::MAIN1] = true;
+	}
+
+	if (!stats.corpse && (activeAnimation->getTimesPlayed() >= 1 || activeAnimation->getName() != "die")) {
+		stats.corpse = true;
+		menu->game_over->visible = true;
+	}
+
+	// allow respawn with Accept if not permadeath
+	if (menu->game_over->visible && menu->game_over->continue_clicked) {
+		menu->game_over->close();
+
+		mapr->teleportation = true;
+		mapr->teleport_mapname = mapr->respawn_map;
+
+		if (stats.permadeath) {
+			// set these positions so it doesn't flash before jumping to Title
+			mapr->teleport_destination.x = stats.pos.x;
+			mapr->teleport_destination.y = stats.pos.y;
+		}
+		else {
+			respawn = true;
+
+			// set teleportation variables.  GameEngine acts on these.
+			mapr->teleport_destination.x = mapr->respawn_point.x;
+			mapr->teleport_destination.y = mapr->respawn_point.y;
+		}
+	}
+}
+
+
+/**
+ * Handles camera updates and cooldown timers
+ */
+void Avatar::handleCameraAndCooldowns() {
 	// update camera
 	mapr->cam.setTarget(stats.pos);
 

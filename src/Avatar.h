@@ -31,6 +31,7 @@ FLARE.  If not, see http://www.gnu.org/licenses/
 #include "Entity.h"
 #include "Utils.h"
 #include <memory>
+#include "PowerManager.h"
 
 class Entity;
 class StatBlock;
@@ -87,6 +88,37 @@ private:
 	bool shouldRecalculatePath();
 	void updatePathTarget();
 
+	void handlePowerRestrictions();
+	void handleBasicState();
+	void handleLowHealthEffects();
+	void handleLevelUp();
+	void handleMouseMovement();
+	void handleAnimations();
+	void handleTransformState();
+	void handleStateChanges();
+	void handleCameraAndCooldowns();
+	void resetBlockState();
+	void handleLowHpSound();
+	void updateLowHpSound();
+	bool shouldLevelUp();
+	void performLevelUp();
+	void handleMouseTargeting();
+	void updateMouseDistance();
+	void handleMouseLock();
+	void updateLockedEnemy();
+	void handleActionQueue();
+	void handleCurrentState();
+	void handleReplacedPower(PowerID replaced_id, const ActionData& action);
+	void handleInstantPower(PowerID replaced_id, const ActionData& action);
+	void handleBlockingPower(PowerID replaced_id, const ActionData& action, Power* power);
+	void handleStanceMovePower(PowerID replaced_id, const ActionData& action, Power* power);
+	void handleStanceState();
+	void handleMoveState();
+	void handlePowerState();
+	void handleBlockState();
+	void handleHitState();
+	void handleDeadState();
+	
 
 	std::vector<Step_sfx> step_def;
 
@@ -111,6 +143,8 @@ private:
 	int chance_calc_path;
 	int path_found_fails;
 	Timer path_found_fail_timer;
+
+	bool restrict_power_use = false;
 
 	FPoint mm_target;
 	FPoint mm_target_desired;
