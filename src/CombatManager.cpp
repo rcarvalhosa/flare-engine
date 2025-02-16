@@ -339,15 +339,6 @@ bool CombatManager::isValidMovement(const FPoint& dest) const {
     return true;
 }
 
-void CombatManager::startMovement() {
-    if (!canTakeAction()) return;
-    
-    Entity* current = getCurrentTurnEntity();
-    if (!current) return;
-
-    // Always update movement_start to the current position so that every move action is relative to the latest location
-    turn_state.movement_start = current->stats.pos;
-}
 
 bool CombatManager::performAction(ActionType action) {
     if (!canTakeAction()) return false;

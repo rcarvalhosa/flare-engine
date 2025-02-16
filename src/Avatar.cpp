@@ -379,13 +379,11 @@ void Avatar::handleMouseMoveDirection() {
         
         // Special handling for combat movement
         if (stats.in_combat) {
-			if(!combat_manager->isValidMovement(target_pos)) {
+            if(!combat_manager->isValidMovement(target_pos)) {
                 return;
-			}
-			else {
-				combat_manager->startMovement();
-				combat_manager->spendAction();
-			}
+            }
+
+			combat_manager->spendAction(); 
         }
 
         // Set movement target if position is valid
@@ -965,6 +963,7 @@ void Avatar::handleStanceState() {
 				drag_walking = true;
 			}
 
+			
 			stats.cur_state = StatBlock::ENTITY_MOVE;
 
 			mm_target_object = MM_TARGET_NONE;
@@ -1484,9 +1483,17 @@ Avatar::~Avatar() {
 }
 
 bool Avatar::move() {
-	// block movement if the player is engaged in combat but it's not their turn
-	if (stats.in_combat && (!combat_manager || !combat_manager->canTakeAction() || !combat_manager->isPlayerTurn())) {
-		return false;
-	}
-	return Entity::move();
+    // block movement if the player is engaged in combat but it's not their turn
+    if (stats.in_combat) {
+        if (!combat_manager) {
+            return false;
+        }
+        
+        // Only check if it's player's turn, don't check action availability here
+        if (!combat_manager->isPlayerTurn()) {
+            return false;
+        }
+    }
+    
+    return Entity::move();
 }
