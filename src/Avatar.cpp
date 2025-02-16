@@ -57,136 +57,197 @@ FLARE.  If not, see http://www.gnu.org/licenses/
 #include "UtilsFileSystem.h"
 #include "UtilsMath.h"
 #include "UtilsParsing.h"
+#include "CombatManager.h"
 
+#include <ranges>
+#include <span>
+
+/**
+ * Avatar class constructor - initializes the player character
+ * Handles initialization of power timers, movement settings, and step sounds
+ */
 Avatar::Avatar()
-	: Entity()
-	, mm_key(settings->mouse_move_swap ? Input::MAIN2 : Input::MAIN1)
-	, mm_is_distant(false)
-	, path()
-	, prev_target()
-	, collided(false)
-	, path_found(false)
-	, chance_calc_path(0)
-	, path_found_fails(0)
-	, path_found_fail_timer()
-	, mm_target(-1, -1)
-	, mm_target_desired(-1, -1)
-	, hero_stats(NULL)
-	, charmed_stats(NULL)
-	, act_target()
-	, drag_walking(false)
-	, respawn(false)
-	, close_menus(false)
-	, allow_movement(true)
-	, cursor_enemy(NULL)
-	, lock_enemy(NULL)
-	, time_played(0)
-	, questlog_dismissed(false)
-	, using_main1(false)
-	, using_main2(false)
-	, prev_hp(0)
-	, playing_lowhp(false)
-	, teleport_camera_lock(false)
-	, feet_index(-1)
-	, mm_target_object(MM_TARGET_NONE)
-	, mm_target_object_pos()
+    // Initialize base Entity class and member variables
+    : Entity()
+    // Movement and input settings
+    , mm_key(settings->mouse_move_swap ? Input::MAIN2 : Input::MAIN1) // Mouse movement key
+    , mm_is_distant(false) // Track if mouse target is far away
+    // Pathfinding state
+    , path() // Current movement path
+    , prev_target() // Previous pathfinding target
+    , collided(false) // Track collision state
+    , path_found(false) // Track if path was found
+    , chance_calc_path(0) // Chance to recalculate path
+    , path_found_fails(0) // Count of failed pathfinds
+    , path_found_fail_timer() // Timer for path finding failures
+    // Mouse movement targets
+    , mm_target{-1, -1} // Current mouse movement target
+    , mm_target_desired{-1, -1} // Desired mouse movement target
+    // Character stats
+    , hero_stats(nullptr) // Base hero stats
+    , charmed_stats(nullptr) // Stats when charmed
+    // Action and state tracking
+    , act_target() // Current action target
+    , drag_walking(false) // Track if drag-walking
+    , respawn(false) // Track if respawning
+    , close_menus(false) // Track if menus should close
+    , allow_movement(true) // Track if movement allowed
+    // Combat targeting
+    , cursor_enemy(nullptr) // Enemy under cursor
+    , lock_enemy(nullptr) // Locked enemy target
+    // Game state
+    , time_played(0) // Total play time
+    , questlog_dismissed(false) // Track if quest log was dismissed
+    // Input state
+    , using_main1(false) // Using primary action
+    , using_main2(false) // Using secondary action
+    // Health tracking
+    , prev_hp(0) // Previous health value
+    , playing_lowhp(false) // Playing low health sound
+    // Camera and movement state
+    , teleport_camera_lock(false) // Camera locked during teleport
+    , feet_index(-1) // Current foot step index
+    // Target object tracking
+    , mm_target_object(MM_TARGET_NONE) // Type of targeted object
+    , mm_target_object_pos() // Position of targeted object
 {
-	power_cooldown_timers.resize(powers->powers.size(), NULL);
-	power_cast_timers.resize(powers->powers.size(), NULL);
+     // Initialize power timer vectors with nullptr
+    power_cooldown_timers.clear();
+    power_cast_timers.clear();
+    power_cooldown_timers.reserve(powers->powers.size());
+    power_cast_timers.reserve(powers->powers.size());
 
-	for (size_t i = 0; i < powers->powers.size(); ++i) {
-		if (powers->isValid(i)) {
-			power_cooldown_ids.push_back(i);
-			power_cooldown_timers[i] = new Timer();
-			power_cast_timers[i] = new Timer();
-		}
-	}
+    // Create timers for each valid power
+    for (size_t i = 0; i < powers->powers.size(); i++) {
+        power_cooldown_timers.push_back(nullptr);
+        power_cast_timers.push_back(nullptr);
+        
+        if (powers->isValid(i)) {
+            power_cooldown_ids.push_back(i);
+            power_cooldown_timers[i] = std::make_unique<Timer>();
+            power_cast_timers[i] = std::make_unique<Timer>();
+        }
+    }
 
-	init();
+    // Initialize core systems
+    init();
+    loadLayerDefinitions();
 
-	loadLayerDefinitions();
+    // Load and parse step sound definitions
+    loadStepSoundDefinitions();
 
-	// load foot-step definitions
-	// @CLASS Avatar: Step sounds|Description of items/step_sounds.txt
-	FileParser infile;
-	if (infile.open("items/step_sounds.txt", FileParser::MOD_FILE, FileParser::ERROR_NONE)) {
-		while (infile.next()) {
-			if (infile.key == "id") {
-				// @ATTR id|string|An identifier name for a set of step sounds.
-				step_def.push_back(Step_sfx());
-				step_def.back().id = infile.val;
-			}
+    // Set initial step sound effects
+    loadStepFX(stats.sfx_step);
+}
 
-			if (step_def.empty()) continue;
+/**
+ * Helper function to load step sound definitions from config file
+ */
+void Avatar::loadStepSoundDefinitions() {
+    FileParser infile;
+    if (!infile.open("items/step_sounds.txt", FileParser::MOD_FILE, FileParser::ERROR_NONE)) {
+        return;
+    }
 
-			if (infile.key == "step") {
-				// @ATTR step|filename|Filename of a step sound effect.
-				step_def.back().steps.push_back(infile.val);
-			}
-		}
-		infile.close();
-	}
-
-	loadStepFX(stats.sfx_step);
+    while (infile.next()) {
+        if (infile.key == "id") {
+            // Add new step sound definition
+            step_def.emplace_back();
+            step_def.back().id = infile.val;
+        }
+        else if (!step_def.empty() && infile.key == "step") {
+            // Add step sound to current definition
+            step_def.back().steps.push_back(infile.val);
+        }
+    }
 }
 
 void Avatar::init() {
+    // Initialize basic stats
+    initializeBasicStats();
+    
+    // Initialize position
+    initializePosition();
+    
+    // Initialize power state
+    initializePowerState();
+    
+    // Initialize transformation state  
+    initializeTransformState();
+    
+    // Initialize power timers and find untransform power
+    initializePowers();
+    
+    // Set default animations
+    stats.animations = "animations/hero.txt";
+}
 
-	// name, base, look are set by GameStateNew so don't reset it here
+void Avatar::initializeBasicStats() {
+    sprites = 0;
+    stats.cur_state = StatBlock::ENTITY_STANCE;
+    
+    stats.hero = true;
+    stats.humanoid = true;
+    stats.level = 1;
+    stats.xp = 0;
+    stats.speed = 0.2f;
+    
+    // Initialize primary stats
+    for (size_t i = 0; i < eset->primary_stats.list.size(); i++) {
+        stats.primary[i] = stats.primary_starting[i] = 1;
+        stats.primary_additional[i] = 0;
+    }
+        
+    stats.recalc();
+}
 
-	// other init
-	sprites = 0;
-	stats.cur_state = StatBlock::ENTITY_STANCE;
-	if (mapr->hero_pos_enabled) {
-		stats.pos.x = mapr->hero_pos.x;
-		stats.pos.y = mapr->hero_pos.y;
-	}
-	current_power = 0;
-	current_power_original = 0;
-	newLevelNotification = false;
+void Avatar::initializePosition() {
+    if (mapr->hero_pos_enabled) {
+        stats.pos = mapr->hero_pos;
+    }
+}
 
-	stats.hero = true;
-	stats.humanoid = true;
-	stats.level = 1;
-	stats.xp = 0;
-	for (size_t i = 0; i < eset->primary_stats.list.size(); ++i) {
-		stats.primary[i] = stats.primary_starting[i] = 1;
-		stats.primary_additional[i] = 0;
-	}
-	stats.speed = 0.2f;
-	stats.recalc();
+void Avatar::initializePowerState() {
+    current_power = current_power_original = 0;
+    newLevelNotification = false;
+    
+    // Clear message log
+    log_msg = std::queue<std::pair<std::string,int>>();
+    
+    respawn = false;
+    stats.cooldown.reset(Timer::END);
+    body = -1;
+}
 
-	while (!log_msg.empty()) {
-		log_msg.pop();
-	}
-	respawn = false;
+void Avatar::initializeTransformState() {
+    transform_triggered = false;
+    setPowers = false;
+    revertPowers = false;
+    last_transform.clear();
+}
 
-	stats.cooldown.reset(Timer::END);
+void Avatar::initializePowers() {
+    untransform_power = 0;
+    
+    for (size_t i = 0; i < powers->powers.size(); ++i) {
+        if (!powers->isValid(i))
+            continue;
+            
+        // Find first valid untransform power
+        if (untransform_power == 0 && 
+            powers->powers[i]->required_items.empty() && 
+            powers->powers[i]->spawn_type == "untransform") {
+            untransform_power = i;
+        }
 
-	body = -1;
-
-	transform_triggered = false;
-	setPowers = false;
-	revertPowers = false;
-	last_transform = "";
-
-	// Find untransform power index to use for manual untransfrom ability
-	untransform_power = 0;
-	for (size_t i = 0; i < powers->powers.size(); ++i) {
-		if (!powers->isValid(i))
-			continue;
-
-		if (untransform_power == 0 && powers->powers[i]->required_items.empty() && powers->powers[i]->spawn_type == "untransform") {
-			untransform_power = i;
-		}
-
-		if (power_cooldown_timers[i])
-			*(power_cooldown_timers[i]) = Timer();
-		if (power_cast_timers[i])
-			*(power_cast_timers[i]) = Timer();
-	}
-
-	stats.animations = "animations/hero.txt";
+        // Reset power timers
+        if (power_cooldown_timers[i]) {
+            *power_cooldown_timers[i] = Timer();
+        }
+        if (power_cast_timers[i]) {
+            *power_cast_timers[i] = Timer();
+        }
+    }
 }
 
 void Avatar::handleNewMap() {
@@ -273,6 +334,10 @@ bool Avatar::pressing_move() {
 	else if (stats.effects.knockback_speed != 0) {
 		return false;
 	}
+	// In combat, only allow mouse movement
+	else if (stats.in_combat) {
+		return settings->mouse_move && mm_is_distant && !isNearMMtarget();
+	}
 	else if (settings->mouse_move) {
 		return mm_is_distant && !isNearMMtarget();
 	}
@@ -285,152 +350,228 @@ bool Avatar::pressing_move() {
 }
 
 void Avatar::set_direction() {
-	if (teleport_camera_lock || !set_dir_timer.isEnd())
-		return;
+    // Don't change direction during teleport or if direction timer hasn't expired
+    if (teleport_camera_lock || !set_dir_timer.isEnd())
+        return;
 
-	int old_dir = stats.direction;
+    int old_dir = stats.direction;
 
-	// handle direction changes
-	if (settings->mouse_move) {
-		if (mm_is_distant) {
-			if (inpt->pressing[mm_key] && (!inpt->lock[mm_key] || drag_walking)) {
-				FPoint mm_target_test = Utils::screenToMap(inpt->mouse.x, inpt->mouse.y, mapr->cam.pos.x, mapr->cam.pos.y);
-				if (mapr->collider.isValidPosition(mm_target_test.x, mm_target_test.y, stats.movement_type, MapCollision::ENTITY_COLLIDE_HERO)) {
-					inpt->lock[mm_key] = true;
-					mm_target_desired = mm_target_test;
-				}
-			}
+    // Handle direction changes based on control scheme
+    if (settings->mouse_move) {
+        handleMouseMoveDirection();
+    }
+    else {
+        handleKeyboardDirection(); 
+    }
 
-			mm_target = mm_target_desired;
+    // Set direction change cooldown timer
+    updateDirectionTimer(old_dir);
+}
 
-			// if blocked, face in pathfinder direction instead
-			if (collided || !mapr->collider.lineOfMovement(stats.pos.x, stats.pos.y, mm_target.x, mm_target.y, stats.movement_type)) {
 
-				// if a path is returned, target first waypoint
+void Avatar::handleMouseMoveDirection() {
+    if (!mm_is_distant)
+        return;
 
-				bool recalculate_path = false;
+    // Handle mouse click for movement
+    if (inpt->pressing[mm_key] && (!inpt->lock[mm_key] || drag_walking)) {
+        FPoint target_pos = Utils::screenToMap(inpt->mouse.x, inpt->mouse.y, 
+                                             mapr->cam.pos.x, mapr->cam.pos.y);
+        
+        // Special handling for combat movement
+        if (stats.in_combat) {
+            if (!isValidCombatMove(target_pos))
+                return;
+        }
 
-				// add a 5% chance to recalculate on every frame. This prevents reclaulating lots of entities in the same frame
-				chance_calc_path += 5;
+        // Set movement target if position is valid
+        if (mapr->collider.isValidPosition(target_pos.x, target_pos.y, 
+                                         stats.movement_type, 
+                                         MapCollision::ENTITY_COLLIDE_HERO)) {
+            inpt->lock[mm_key] = true;
+            mm_target_desired = target_pos;
+        }
+    }
 
-				bool calc_path_success = Math::percentChance(chance_calc_path);
-				if (calc_path_success)
-					recalculate_path = true;
+    mm_target = mm_target_desired;
 
-				// if a collision ocurred then recalculate
-				if (collided)
-					recalculate_path = true;
+    // Handle pathfinding if direct movement is blocked
+    if (collided || !mapr->collider.lineOfMovement(stats.pos.x, stats.pos.y, 
+                                                  mm_target.x, mm_target.y, 
+                                                  stats.movement_type)) {
+        handlePathfinding();
+    }
+    else {
+        path.clear();
+    }
 
-				// if theres no path, it needs to be calculated
-				if (!recalculate_path && path.empty())
-					recalculate_path = true;
+    // Set final direction based on target
+    stats.direction = Utils::calcDirection(stats.pos.x, stats.pos.y, 
+                                         mm_target.x, mm_target.y);
+}
 
-				// if the target moved more than 1 tile away, recalculate
-				if (!recalculate_path && Utils::calcDist(FPoint(Point(prev_target)), FPoint(Point(mm_target))) > 1.f)
-					recalculate_path = true;
+bool Avatar::isValidCombatMove(const FPoint& target_pos) {
+     // Can't start new movement if not player's turn or no actions available
+    if (path.empty() && (!combat_manager || !combat_manager->canTakeAction() || 
+        !combat_manager->isPlayerTurn())) {
+        mm_target = stats.pos;
+        return false;
+    }
 
-				// dont recalculate if we were blocked and no path was found last time
-				// this makes sure that pathfinding calculation is not spammed when the target is unreachable and the entity is as close as its going to get
-				if (!path_found && collided && !calc_path_success) {
-					recalculate_path = false;
-				}
-				else {
-					// reset the collision flag only if we dont want the cooldown in place
-					collided = false;
-				}
+    float dist = Utils::calcDist(stats.pos, target_pos);
+    
+    // Starting new movement
+    if (combat_manager->getTurnState().actions_remaining > 0 && path.empty()) {
+        // Check 6 tile movement limit
+        if (dist > 6.0f) {
+            mm_target = stats.pos;
+            return false;
+        }
+        
+        combat_manager->startMovement();
+        combat_manager->spendAction();
+        return true;
+    }
+    
+    // Continuing existing movement
+    if (!path.empty()) {
+        float dist_from_start = Utils::calcDist(
+            combat_manager->getTurnState().movement_start, target_pos);
+        if (dist_from_start > 6.0f) {
+            mm_target = stats.pos;
+            return false;
+        }
+        return true;
+    }
 
-				if (!path_found_fail_timer.isEnd()) {
-					recalculate_path = false;
-					chance_calc_path = -100;
-				}
+    mm_target = stats.pos;
+    return false;
+}
 
-				prev_target = mm_target;
 
-				// target first waypoint
-				if (recalculate_path) {
-					chance_calc_path = -100;
-					path.clear();
-					path_found = mapr->collider.computePath(stats.pos, mm_target, path, stats.movement_type, MapCollision::DEFAULT_PATH_LIMIT);
+void Avatar::handlePathfinding() {
+    bool should_recalc = shouldRecalculatePath();
+    
+    if (!path_found_fail_timer.isEnd()) {
+        should_recalc = false;
+        chance_calc_path = -100;
+    }
 
-					if (!path_found) {
-						path_found_fails++;
-						if (path_found_fails >= PATH_FOUND_FAIL_THRESHOLD) {
-							// could not find a path after several tries, so wait a little before the next attempt
-							path_found_fail_timer.reset(Timer::BEGIN);
-						}
-					}
-					else {
-						path_found_fails = 0;
-						path_found_fail_timer.reset(Timer::END);
-					}
-				}
+    prev_target = mm_target;
 
-				if (!path.empty()) {
-					mm_target = path.back();
+    if (should_recalc) {
+        recalculatePath();
+    }
 
-					// if distance to node is lower than a tile size, the node is going to be passed and can be removed
-					if (Utils::calcDist(stats.pos, mm_target) <= 1.f)
-						path.pop_back();
-				}
-			}
-			else {
-				path.clear();
-			}
+    updatePathTarget();
+}
 
-			stats.direction = Utils::calcDirection(stats.pos.x, stats.pos.y, mm_target.x, mm_target.y);
-		}
-	}
-	else {
-		// movement keys take top priority for setting direction
-		bool press_up = inpt->pressing[Input::UP] && !inpt->lock[Input::UP];
-		bool press_down = inpt->pressing[Input::DOWN] && !inpt->lock[Input::DOWN];
-		bool press_left = inpt->pressing[Input::LEFT] && !inpt->lock[Input::LEFT];
-		bool press_right = inpt->pressing[Input::RIGHT] && !inpt->lock[Input::RIGHT];
+bool Avatar::shouldRecalculatePath() {
+    // Add random chance to recalculate to spread processing load
+    chance_calc_path += 5;
+    if (Math::percentChance(chance_calc_path))
+        return true;
 
-		// aiming keys can set direction as well
-		if (!press_up && !press_down && !press_left && !press_right) {
-			press_up = inpt->pressing[Input::AIM_UP] && !inpt->lock[Input::AIM_UP];
-			press_down = inpt->pressing[Input::AIM_DOWN] && !inpt->lock[Input::AIM_DOWN];
-			press_left = inpt->pressing[Input::AIM_LEFT] && !inpt->lock[Input::AIM_LEFT];
-			press_right = inpt->pressing[Input::AIM_RIGHT] && !inpt->lock[Input::AIM_RIGHT];
-		}
+    // Recalculate on collision
+    if (collided) {
+        collided = false;
+        return true;
+    }
 
-		if (press_up && press_left) stats.direction = 1;
-		else if (press_up && press_right) stats.direction = 3;
-		else if (press_down && press_right) stats.direction = 5;
-		else if (press_down && press_left) stats.direction = 7;
-		else if (press_left) stats.direction = 0;
-		else if (press_up) stats.direction = 2;
-		else if (press_right) stats.direction = 4;
-		else if (press_down) stats.direction = 6;
-		// Adjust for ORTHO tilesets
-		if (eset->tileset.orientation == eset->tileset.TILESET_ORTHOGONAL && (press_up || press_down || press_left || press_right))
-			stats.direction = static_cast<unsigned char>((stats.direction == 7) ? 0 : stats.direction + 1);
-	}
-	if (settings->mouse_move) {
-		// when using mouse move, we use a longer turn delay to prevent the movement from being "jittery" with too many direction changes
-		// however, we lower this delay if the player can't reach their destination before the next direction check
-		// this keeps the player's movement smooth for most of the journey towards a given point, although there is still some jitter as they near their destination.
-		int delay_ticks = settings->max_frames_per_sec / 2;
+    // Recalculate if no current path
+    if (path.empty())
+        return true;
 
-		float real_speed = stats.speed * StatBlock::SPEED_MULTIPLIER[stats.direction] * stats.effects.speed / 100;
-		// we multiply by 0.5 here because when we don't, the player tends to turn 180 degrees for brief moments
-		int max_turn_ticks = static_cast<int>(Utils::calcDist(stats.pos, mm_target) * 0.5f / real_speed);
-		if (delay_ticks > max_turn_ticks) {
-			set_dir_timer.setDuration(max_turn_ticks);
-		}
-		else {
-			set_dir_timer.setDuration(delay_ticks);
-		}
-	}
-	else {
-		// give direction changing a 100ms cooldown
-		// this allows the player to quickly change direction on their own without becoming overly "jittery"
-		// the cooldown can be ended by releasing the move button, but the cooldown is so fast that it doesn't matter much (maybe a speed run tactic?)
-		if (stats.direction != old_dir) {
-			set_dir_timer.setDuration(settings->max_frames_per_sec / 10);
-		}
-	}
+    // Recalculate if target moved significantly
+    if (Utils::calcDist(FPoint(Point(prev_target)), 
+                       FPoint(Point(mm_target))) > 1.f)
+        return true;
+
+    return false;
+}
+
+void Avatar::recalculatePath() {
+    chance_calc_path = -100;
+    path.clear();
+    
+    path_found = mapr->collider.computePath(stats.pos, mm_target, path,
+                                          stats.movement_type, 
+                                          MapCollision::DEFAULT_PATH_LIMIT);
+
+    if (!path_found) {
+        path_found_fails++;
+        if (path_found_fails >= PATH_FOUND_FAIL_THRESHOLD) {
+            path_found_fail_timer.reset(Timer::BEGIN);
+        }
+    }
+    else {
+        path_found_fails = 0;
+        path_found_fail_timer.reset(Timer::END);
+    }
+}
+
+void Avatar::updatePathTarget() {
+    if (!path.empty()) {
+        mm_target = path.back();
+
+        // Remove waypoint if close enough
+        if (Utils::calcDist(stats.pos, mm_target) <= 1.f)
+            path.pop_back();
+    }
+}
+
+
+void Avatar::handleKeyboardDirection() {
+    // Check movement keys
+    bool press_up = inpt->pressing[Input::UP] && !inpt->lock[Input::UP];
+    bool press_down = inpt->pressing[Input::DOWN] && !inpt->lock[Input::DOWN];
+    bool press_left = inpt->pressing[Input::LEFT] && !inpt->lock[Input::LEFT];
+    bool press_right = inpt->pressing[Input::RIGHT] && !inpt->lock[Input::RIGHT];
+
+    // Fall back to aim keys if no movement keys pressed
+    if (!press_up && !press_down && !press_left && !press_right) {
+        press_up = inpt->pressing[Input::AIM_UP] && !inpt->lock[Input::AIM_UP];
+        press_down = inpt->pressing[Input::AIM_DOWN] && !inpt->lock[Input::AIM_DOWN];
+        press_left = inpt->pressing[Input::AIM_LEFT] && !inpt->lock[Input::AIM_LEFT];
+        press_right = inpt->pressing[Input::AIM_RIGHT] && !inpt->lock[Input::AIM_RIGHT];
+    }
+
+    // Set direction based on key combinations
+    if (press_up && press_left) stats.direction = 1;
+    else if (press_up && press_right) stats.direction = 3;
+    else if (press_down && press_right) stats.direction = 5;
+    else if (press_down && press_left) stats.direction = 7;
+    else if (press_left) stats.direction = 0;
+    else if (press_up) stats.direction = 2;
+    else if (press_right) stats.direction = 4;
+    else if (press_down) stats.direction = 6;
+
+    // Adjust for orthogonal tilesets
+    if (eset->tileset.orientation == eset->tileset.TILESET_ORTHOGONAL && 
+        (press_up || press_down || press_left || press_right)) {
+        stats.direction = static_cast<unsigned char>(
+            (stats.direction == 7) ? 0 : stats.direction + 1);
+    }
+}
+
+void Avatar::updateDirectionTimer(int old_dir) {
+    if (settings->mouse_move) {
+        // Calculate optimal turn delay for mouse movement
+        int delay_ticks = settings->max_frames_per_sec / 2;
+
+        float real_speed = stats.speed * StatBlock::SPEED_MULTIPLIER[stats.direction] * 
+                          stats.effects.speed / 100;
+        int max_turn_ticks = static_cast<int>(
+            Utils::calcDist(stats.pos, mm_target) * 0.5f / real_speed);
+            
+        set_dir_timer.setDuration(std::min(delay_ticks, max_turn_ticks));
+    }
+    else {
+        // 100ms cooldown for keyboard direction changes
+        if (stats.direction != old_dir) {
+            set_dir_timer.setDuration(settings->max_frames_per_sec / 10);
+        }
+    }
 }
 
 /**
@@ -763,6 +904,11 @@ void Avatar::logic() {
 						playAttackSound(attack_anim);
 						power_cast_timers[current_power]->setDuration(activeAnimation->getDuration());
 						power_cast_timers[current_power_original]->setDuration(activeAnimation->getDuration()); // for replace_by_effect
+
+						// In combat, spend an action when starting a power
+						if (stats.in_combat && combat_manager) {
+							combat_manager->spendAction();
+						}
 					}
 
 					// do power
@@ -1182,11 +1328,19 @@ Avatar::~Avatar() {
 	unloadSounds();
 
 	for (size_t i = 0; i < power_cooldown_timers.size(); ++i) {
-		delete power_cooldown_timers[i];
-		delete power_cast_timers[i];
+		power_cooldown_timers[i].reset();
+		power_cast_timers[i].reset();
 	}
 
 	for (unsigned i=0; i<sound_steps.size(); i++) {
 		snd->unload(sound_steps[i]);
 	}
+}
+
+bool Avatar::move() {
+	// block movement if the player is engaged in combat but it's not their turn
+	if (stats.in_combat && (!combat_manager || !combat_manager->canTakeAction() || !combat_manager->isPlayerTurn())) {
+		return false;
+	}
+	return Entity::move();
 }

@@ -73,6 +73,7 @@ protected:
 	bool fleeing;
 	bool move_to_safe_dist;
 	Timer turn_timer;
+	float move_distance_this_turn;  // Track movement during current turn
 
 	bool instant_power;
 	PowerID replaced_power_id;

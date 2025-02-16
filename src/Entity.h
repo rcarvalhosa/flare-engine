@@ -68,7 +68,7 @@ public:
 	void unloadSounds();
 	void playAttackSound(const std::string& attack_name);
 	void playSound(int sound_type);
-	bool move();
+	virtual bool move();
 	bool takeHit(Hazard &h);
 
 	// sound effects

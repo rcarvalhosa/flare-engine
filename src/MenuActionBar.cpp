@@ -51,11 +51,13 @@ FLARE.  If not, see http://www.gnu.org/licenses/
 #include "UtilsParsing.h"
 #include "WidgetLabel.h"
 #include "WidgetSlot.h"
+#include "CombatManager.h"
 
 #include <climits>
 
 MenuActionBar::MenuActionBar()
 	: sprite_emptyslot(NULL)
+	, end_turn_button(NULL)
 	, sfx_unable_to_cast(0)
 	, tooltip_length(MenuPowers::TOOLTIP_LONG_MENU)
 	, powers_overlap_slots(false)
@@ -155,6 +157,13 @@ MenuActionBar::MenuActionBar()
 				int y = Parse::popFirstInt(infile.val);
 				menus[MENU_LOG]->setBasePos(x, y, Utils::ALIGN_TOPLEFT);
 				menus[MENU_LOG]->pos.w = menus[MENU_LOG]->pos.h = eset->resolutions.icon_size;
+			}
+			// @ATTR end_turn_menu|point|Position for the End Turn menu button.
+			else if (infile.key == "end_turn_menu") {
+				int x = Parse::popFirstInt(infile.val);
+				int y = Parse::popFirstInt(infile.val);
+				end_turn_button->setBasePos(x, y, Utils::ALIGN_BOTTOMRIGHT);
+				end_turn_button->pos.w = end_turn_button->pos.h = eset->resolutions.icon_size;
 			}
 			// @ATTR tooltip_length|["short", "long_menu", "long_all"]|The length of power descriptions in tooltips. 'short' will display only the power name. 'long_menu' (the default setting) will display full tooltips, but only for powers that are in the Powers menu. 'long_all' will display full tooltips for all powers.
 			else if (infile.key == "tooltip_length") {
@@ -258,6 +267,14 @@ void MenuActionBar::align() {
 		menus[i]->setPos(window_area.x, window_area.y);
 		menu_labels[i] = msg->getv("Hotkey: %s", inpt->getBindingString(i + Input::CHARACTER).c_str());
 	}
+
+	// position the end turn button in the bottom right
+	if (end_turn_button) {
+		end_turn_button->setBasePos(window_area.w - (eset->resolutions.icon_size * 2), 
+								  window_area.h - (eset->resolutions.icon_size * 2),
+								  Utils::ALIGN_TOPLEFT);
+		end_turn_button->setPos(window_area.x, window_area.y);
+	}
 }
 
 void MenuActionBar::clear(bool skip_items) {
@@ -303,6 +320,14 @@ void MenuActionBar::loadGraphics() {
 		sprite_emptyslot->setClipFromRect(icon_clip);
 		graphics->unref();
 	}
+
+	// Initialize end turn button
+	end_turn_button = new WidgetSlot(WidgetSlot::NO_ICON, WidgetSlot::HIGHLIGHT_NORMAL);
+	end_turn_button->pos.w = end_turn_button->pos.h = eset->resolutions.icon_size;
+	end_turn_button->enabled = true;
+	end_turn_button->show_colorblind_highlight = true;
+	end_turn_button->continuous = false;  // single click activation
+	tablist.add(end_turn_button);
 }
 
 void MenuActionBar::logic() {
@@ -324,6 +349,21 @@ void MenuActionBar::logic() {
 	}
 	if (tablist.getCurrent() == -1) {
 		tablist.lock();
+	}
+
+	// Update End Turn button visibility and handle clicks
+	if (combat_manager && combat_manager->isInCombat() && combat_manager->isPlayerTurn()) {
+		end_turn_button->visible = true;
+		end_turn_button->enabled = true;
+		int click_result = end_turn_button->checkClick();
+		// Accept both DRAG and ACTIVATE as valid click types
+		if (click_result == WidgetSlot::DRAG || click_result == WidgetSlot::ACTIVATE) {
+			combat_manager->endPlayerTurn();
+		}
+	}
+	else {
+		end_turn_button->visible = false;
+		end_turn_button->enabled = false;
 	}
 
 	// hero has no powers
@@ -395,7 +435,6 @@ void MenuActionBar::logic() {
 }
 
 void MenuActionBar::render() {
-
 	Menu::render();
 
 	// draw hotkeyed icons
@@ -418,6 +457,15 @@ void MenuActionBar::render() {
 	for (unsigned i=0; i<MENU_COUNT; i++) {
 		menus[i]->highlight = (requires_attention[i] && !menus[i]->in_focus);
 		menus[i]->render();
+	}
+
+	// render end turn button
+	if (end_turn_button && end_turn_button->visible) {
+		if (sprite_emptyslot) {
+			sprite_emptyslot->setDestFromRect(end_turn_button->pos);
+			render_device->render(sprite_emptyslot);
+		}
+		end_turn_button->render();
 	}
 }
 
@@ -443,6 +491,14 @@ void MenuActionBar::renderTooltips(const Point& position) {
 			break;
 		}
 	}
+
+	// end turn button tooltip
+	if (end_turn_button && end_turn_button->visible && Utils::isWithinRect(end_turn_button->pos, position)) {
+		tip_data.clear();
+		tip_data.addText(msg->get("End Turn"));
+		tooltipm->push(tip_data, position, TooltipData::STYLE_FLOAT);
+	}
+
 	tip_data.clear();
 
 	for (unsigned i = 0; i < slots_count; i++) {
@@ -864,9 +920,9 @@ WidgetSlot* MenuActionBar::getSlotFromPosition(const Point& position) {
 }
 
 MenuActionBar::~MenuActionBar() {
-
 	menu_act = NULL;
 	delete sprite_emptyslot;
+	delete end_turn_button;
 
 	labels.clear();
 	menu_labels.clear();

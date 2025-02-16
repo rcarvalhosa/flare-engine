@@ -45,6 +45,10 @@ FLARE.  If not, see http://www.gnu.org/licenses/
 #include "SharedResources.h"
 #include "StatBlock.h"
 #include "UtilsMath.h"
+#include "AnimationManager.h"
+#include "AnimationSet.h"
+#include "CombatManager.h"
+#include "CombatText.h"
 
 const float EntityBehavior::ALLY_FLEE_DISTANCE = 2;
 const float EntityBehavior::ALLY_FOLLOW_DISTANCE_WALK = 5.5;
@@ -69,6 +73,7 @@ EntityBehavior::EntityBehavior(Entity *_e)
 	, turn_timer()
 	, instant_power(false)
 	, replaced_power_id(0)
+	, move_distance_this_turn(0)
 {
 	// wait when PATH_FOUND_FAIL_THRESHOLD is exceeded
 	path_found_fail_timer.setDuration(settings->max_frames_per_sec * PATH_FOUND_FAIL_WAIT_SECONDS);
@@ -87,19 +92,23 @@ void EntityBehavior::logic() {
 		return;
 	}
 
+	// If the entity is not an ally, check if it has encountered the player
+	// If it has, set the encountered flag to true
+	// If it hasn't, return to skip logic
 	if (!e->stats.hero_ally) {
-		if (Utils::calcDist(e->stats.pos, pc->stats.pos) <= settings->encounter_dist)
+		if (Utils::calcDist(e->stats.pos, pc->stats.pos) <= settings->encounter_dist) 
 			e->stats.encountered = true;
 
-		if (!e->stats.encountered)
+		if (!e->stats.encountered) 
 			return;
 	}
 
-	doUpkeep();
-	findTarget();
-	checkPower();
-	checkMove();
-	updateState();
+    // AI logic
+	doUpkeep(); // Update stats and handle teleportation
+	findTarget(); // Find the player as a target
+	checkPower(); // Check if the entity has a power to use
+	checkMove(); // Check if the entity should move
+	updateState(); // Update the entity's state
 
 	fleeing = false;
 
@@ -220,6 +229,16 @@ void EntityBehavior::findTarget() {
 	// we put the entity in a combat state and activate powers that trigger when entering combat
 	if (e->stats.join_combat) {
 		e->stats.in_combat = true;
+
+		// Initiate or join turn-based combat through combat manager
+		if (!e->stats.hero_ally) {
+			if (!combat_manager->isInCombat()) {
+				combat_manager->enterCombat(e, pc);
+			}
+			else {
+				combat_manager->addCombatant(e);
+			}
+		}
 
 		StatBlock::AIPower* ai_power;
 		if (!e->stats.hero_ally) {
@@ -349,28 +368,28 @@ void EntityBehavior::findTarget() {
  * Activate a ready power, if the attack animation has followed through
  */
 void EntityBehavior::checkPower() {
+    
+	// currently all enemy power use happens during combat
+    if (!e->stats.in_combat) return;
+
+    // If in combat, only allow actions during entity's turn
+	if (!combat_manager || !combat_manager->canTakeAction() || combat_manager->getCurrentTurnEntity() != e) {
+		return;
+	}
 
 	// stunned enemies can't act
-	if (e->stats.effects.stun || e->stats.effects.fear || fleeing) return;
+    if (e->stats.effects.stun || e->stats.effects.fear || fleeing) return;
 
-	// currently all enemy power use happens during combat
-	if (!e->stats.in_combat) return;
+    // if the enemy is on global cooldown it cannot act
+    if (!e->stats.cooldown.isEnd()) return;
 
-	// if the enemy is on global cooldown it cannot act
-	if (!e->stats.cooldown.isEnd()) return;
+    // NPCs engaged in dialog can't act
+    if (e->stats.npc && menu && menu->talker && menu->talker->visible && menu->talker->npc == static_cast<NPC*>(e))
+        return;
 
-	// NPCs engaged in dialog can't act
-	if (e->stats.npc && menu && menu->talker && menu->talker->visible && menu->talker->npc == static_cast<NPC*>(e))
-		return;
-
-	// Note there are two stages to activating a power.
-	// First is the enemy choosing to use a power based on behavioral chance
-	// Second is the power actually firing off once the related animation reaches the active frame.
-	// The second stage occurs in updateState()
-
-	// pick a power from the available powers for this creature
-	if (e->stats.cur_state == StatBlock::ENTITY_STANCE || e->stats.cur_state == StatBlock::ENTITY_MOVE) {
-		StatBlock::AIPower* ai_power = NULL;
+    // pick a power from the available powers for this creature
+    if (e->stats.cur_state == StatBlock::ENTITY_STANCE || e->stats.cur_state == StatBlock::ENTITY_MOVE) {
+        StatBlock::AIPower* ai_power = NULL;
 
 		// check half dead power use
 		if (e->stats.half_dead_power && e->stats.hp <= e->stats.get(Stats::HP_MAX)/2) {
@@ -385,6 +404,7 @@ void EntityBehavior::checkPower() {
 			ai_power = e->stats.getAIPower(StatBlock::AI_POWER_MELEE);
 		}
 
+		// Check if the power is valid and replaceable by an effect
 		if (ai_power != NULL && powers->isValid(ai_power->id)) {
 			PowerID replaced_id = powers->checkReplaceByEffect(ai_power->id, &e->stats);
 			if (replaced_id == 0) {
@@ -392,13 +412,18 @@ void EntityBehavior::checkPower() {
 			}
 			else {
 				Power* pwr = powers->powers[replaced_id];
+				// Check if the power requires LOS and if the entity doesn't have it
 				if (!los && (pwr->requires_los || pwr->requires_los_default)) {
 					ai_power = NULL;
 				}
+				// If the power is valid, activate it
 				if (ai_power != NULL) {
 					e->stats.cur_state = StatBlock::ENTITY_POWER;
 					e->stats.activated_power = ai_power;
 					replaced_power_id = replaced_id;
+					// Spend an action and mark the action as an attack
+					combat_manager->spendAction();
+					combat_manager->getTurnState().last_action = CombatManager::ACTION_POWER;
 				}
 			}
 		}
@@ -413,269 +438,316 @@ void EntityBehavior::checkPower() {
  * Check state changes related to movement
  */
 void EntityBehavior::checkMove() {
+    // dying enemies can't move
+    if (e->stats.cur_state == StatBlock::ENTITY_DEAD || e->stats.cur_state == StatBlock::ENTITY_CRITDEAD) return;
 
-	// dying enemies can't move
-	if (e->stats.cur_state == StatBlock::ENTITY_DEAD || e->stats.cur_state == StatBlock::ENTITY_CRITDEAD) return;
+    // stunned enemies can't act
+    if (e->stats.effects.stun) return;
 
-	// stunned enemies can't act
-	if (e->stats.effects.stun) return;
+    // NPCs engaged in dialog can't act
+    if (e->stats.npc && menu && menu->talker && menu->talker->visible && menu->talker->npc == static_cast<NPC*>(e)) {
+        if (e->stats.cur_state == StatBlock::ENTITY_MOVE) {
+            e->stats.cur_state = StatBlock::ENTITY_STANCE;
+        }
+        return;
+    }
 
-	// NPCs engaged in dialog can't act
-	if (e->stats.npc && menu && menu->talker && menu->talker->visible && menu->talker->npc == static_cast<NPC*>(e)) {
-		if (e->stats.cur_state == StatBlock::ENTITY_MOVE) {
-			e->stats.cur_state = StatBlock::ENTITY_STANCE;
-		}
-		return;
-	}
+    // If in combat, handle turn-based movement
+    if (e->stats.in_combat) {
+        // Can only move during own turn and if actions are available
+        if (!combat_manager || !combat_manager->canTakeAction() || combat_manager->getCurrentTurnEntity() != e) {
+            if (e->stats.cur_state == StatBlock::ENTITY_MOVE) {
+                e->stats.cur_state = StatBlock::ENTITY_STANCE;
+            }
+            return;
+        }
 
-	// handle not being in combat and (not patrolling waypoints or waiting at waypoint)
-	if (!e->stats.hero_ally && !e->stats.in_combat && (e->stats.waypoints.empty() || !e->stats.waypoint_timer.isEnd())) {
+        // Reset movement tracking when starting a new movement
+        /*if (e->stats.cur_state == StatBlock::ENTITY_STANCE && combat_manager->getTurnState().last_action != CombatManager::ACTION_MOVE) {
+            move_distance_this_turn = 0;
+        }
 
-		if (e->stats.cur_state == StatBlock::ENTITY_MOVE) {
-			e->stats.cur_state = StatBlock::ENTITY_STANCE;
-		}
+        // If we're moving, track the distance
+        if (e->stats.cur_state == StatBlock::ENTITY_MOVE) {
+            FPoint prev_pos = e->stats.pos;
+            if (e->move()) {
+                // Calculate distance moved this step
+                move_distance_this_turn += Utils::calcDist(prev_pos, e->stats.pos);
+                
+                // If we've reached movement limit, stop and consume action
+                if (move_distance_this_turn >= combat_manager->getMovementRange()) {
+                    e->stats.cur_state = StatBlock::ENTITY_STANCE;
+                    combat_manager->spendAction();
+                    combat_manager->getTurnState().last_action = CombatManager::ACTION_MOVE;
+                    return;
+                }
+            }
+            else {
+                // Hit an obstacle, stop moving
+                e->stats.cur_state = StatBlock::ENTITY_STANCE;
+                if (move_distance_this_turn > 0) {
+                    combat_manager->spendAction();
+                    combat_manager->getTurnState().last_action = CombatManager::ACTION_MOVE;
+                }
+                return;
+            }
+        }
 
-		// currently enemies only move while in combat or patrolling
-		return;
-	}
+        // If we're in stance and want to move, start movement
+        if (e->stats.cur_state == StatBlock::ENTITY_STANCE) {
+            // Only start moving if we have a valid target and aren't too close
+            if (target_dist > e->stats.melee_range) {
+                checkMoveStateStance();
+            }
+        }
+        return; */
+    }
 
-	float real_speed = e->stats.speed * StatBlock::SPEED_MULTIPLIER[e->stats.direction] * e->stats.effects.speed / 100;
+    // Non-combat movement handling
+    if (!e->stats.hero_ally && !e->stats.in_combat && (e->stats.waypoints.empty() || !e->stats.waypoint_timer.isEnd())) {
+        if (e->stats.cur_state == StatBlock::ENTITY_MOVE) {
+            e->stats.cur_state = StatBlock::ENTITY_STANCE;
+        }
+        return;
+    }
+    
+    float real_speed = e->stats.speed * StatBlock::SPEED_MULTIPLIER[e->stats.direction] * e->stats.effects.speed / 100;
 
-	unsigned turn_ticks = turn_timer.getCurrent();
-	turn_timer.setDuration(e->stats.turn_delay);
+    unsigned turn_ticks = turn_timer.getCurrent();
+    turn_timer.setDuration(e->stats.turn_delay);
 
-	// If an enemy's turn_delay is too long compared to their speed, they will be unable to follow a path properly.
-	// So here, we get how many frames it takes to traverse a single tile and then compare it to the turn delay time.
-	// We then cap the turn delay the time at the number of frames we calculated for tile traversal.
-	// There may be other solutions to this problem, such as having the enemy pause when they reach a path point,
-	// but I was unable to get anything else working as cleanly/bug-free as this.
-	int max_turn_ticks = static_cast<int>(1.f / real_speed);
-	if (e->stats.turn_delay > max_turn_ticks) {
-		turn_timer.setDuration(max_turn_ticks);
-	}
-	turn_timer.setCurrent(turn_ticks);
+    // If an enemy's turn_delay is too long compared to their speed, they will be unable to follow a path properly.
+    // So here, we get how many frames it takes to traverse a single tile and then compare it to the turn delay time.
+    // We then cap the turn delay the time at the number of frames we calculated for tile traversal.
+    // There may be other solutions to this problem, such as having the enemy pause when they reach a path point,
+    // but I was unable to get anything else working as cleanly/bug-free as this.
+    int max_turn_ticks = static_cast<int>(1.f / real_speed);
+    if (e->stats.turn_delay > max_turn_ticks) {
+        turn_timer.setDuration(max_turn_ticks);
+    }
+    turn_timer.setCurrent(turn_ticks);
 
-	// clear current space to allow correct movement
-	mapr->collider.unblock(e->stats.pos.x, e->stats.pos.y);
+    // clear current space to allow correct movement
+    mapr->collider.unblock(e->stats.pos.x, e->stats.pos.y);
 
-	path_found_fail_timer.tick();
+    path_found_fail_timer.tick();
 
-	// update direction
-	if (e->stats.facing) {
-		turn_timer.tick();
-		if (turn_timer.isEnd()) {
+    // update direction
+    if (e->stats.facing) {
+        turn_timer.tick();
+        if (turn_timer.isEnd()) {
 
-			// if blocked, face in pathfinder direction instead
-			if (!mapr->collider.lineOfMovement(e->stats.pos.x, e->stats.pos.y, pursue_pos.x, pursue_pos.y, e->stats.movement_type)) {
+            // if blocked, face in pathfinder direction instead
+            if (!mapr->collider.lineOfMovement(e->stats.pos.x, e->stats.pos.y, pursue_pos.x, pursue_pos.y, e->stats.movement_type)) {
 
-				// if a path is returned, target first waypoint
+                // if a path is returned, target first waypoint
 
-				bool recalculate_path = false;
+                bool recalculate_path = false;
 
-				// add a 5% chance to recalculate on every frame. This prevents reclaulating lots of entities in the same frame
-				chance_calc_path += 5;
+                // add a 5% chance to recalculate on every frame. This prevents reclaulating lots of entities in the same frame
+                chance_calc_path += 5;
 
-				bool calc_path_success = Math::percentChance(chance_calc_path);
-				if (calc_path_success)
-					recalculate_path = true;
+                bool calc_path_success = Math::percentChance(chance_calc_path);
+                if (calc_path_success)
+                    recalculate_path = true;
 
-				// if a collision ocurred then recalculate
-				if (collided)
-					recalculate_path = true;
+                // if a collision ocurred then recalculate
+                if (collided)
+                    recalculate_path = true;
 
-				// if theres no path, it needs to be calculated
-				if (!recalculate_path && path.empty())
-					recalculate_path = true;
+                // if theres no path, it needs to be calculated
+                if (!recalculate_path && path.empty())
+                    recalculate_path = true;
 
-				// if the target moved more than 1 tile away, recalculate
-				if (!recalculate_path && Utils::calcDist(FPoint(Point(prev_target)), FPoint(Point(pursue_pos))) > 1.f)
-					recalculate_path = true;
+                // if the target moved more than 1 tile away, recalculate
+                if (!recalculate_path && Utils::calcDist(FPoint(Point(prev_target)), FPoint(Point(pursue_pos))) > 1.f)
+                    recalculate_path = true;
 
-				// dont recalculate if we were blocked and no path was found last time
-				// this makes sure that pathfinding calculation is not spammed when the target is unreachable and the entity is as close as its going to get
-				if (!path_found && collided && !calc_path_success) {
-					recalculate_path = false;
-				}
-				else {
-					// reset the collision flag only if we dont want the cooldown in place
-					collided = false;
-				}
+                // dont recalculate if we were blocked and no path was found last time
+                // this makes sure that pathfinding calculation is not spammed when the target is unreachable and the entity is as close as its going to get
+                if (!path_found && collided && !calc_path_success) {
+                    recalculate_path = false;
+                }
+                else {
+                    // reset the collision flag only if we dont want the cooldown in place
+                    collided = false;
+                }
 
-				if (!path_found_fail_timer.isEnd()) {
-					recalculate_path = false;
-					chance_calc_path = -100;
-				}
+                if (!path_found_fail_timer.isEnd()) {
+                    recalculate_path = false;
+                    chance_calc_path = -100;
+                }
 
-				prev_target = pursue_pos;
+                prev_target = pursue_pos;
 
-				// target first waypoint
-				if (recalculate_path) {
-					chance_calc_path = -100;
-					path.clear();
-					path_found = mapr->collider.computePath(e->stats.pos, pursue_pos, path, e->stats.movement_type, MapCollision::DEFAULT_PATH_LIMIT);
+                // target first waypoint
+                if (recalculate_path) {
+                    chance_calc_path = -100;
+                    path.clear();
+                    path_found = mapr->collider.computePath(e->stats.pos, pursue_pos, path, e->stats.movement_type, MapCollision::DEFAULT_PATH_LIMIT);
 
-					if (!path_found) {
-						path_found_fails++;
-						if (path_found_fails >= PATH_FOUND_FAIL_THRESHOLD) {
-							// could not find a path after several tries, so wait a little before the next attempt
-							path_found_fail_timer.reset(Timer::BEGIN);
-						}
-					}
-					else {
-						path_found_fails = 0;
-						path_found_fail_timer.reset(Timer::END);
-					}
-				}
+                    if (!path_found) {
+                        path_found_fails++;
+                        if (path_found_fails >= PATH_FOUND_FAIL_THRESHOLD) {
+                            // could not find a path after several tries, so wait a little before the next attempt
+                            path_found_fail_timer.reset(Timer::BEGIN);
+                        }
+                    }
+                    else {
+                        path_found_fails = 0;
+                        path_found_fail_timer.reset(Timer::END);
+                    }
+                }
 
-				if (!path.empty()) {
-					pursue_pos = path.back();
+                if (!path.empty()) {
+                    pursue_pos = path.back();
 
-					// if distance to node is lower than a tile size, the node is going to be passed and can be removed
-					if (Utils::calcDist(e->stats.pos, pursue_pos) <= 1.f)
-						path.pop_back();
-				}
-			}
-			else {
-				path.clear();
-			}
+                    // if distance to node is lower than a tile size, the node is going to be passed and can be removed
+                    if (Utils::calcDist(e->stats.pos, pursue_pos) <= 1.f)
+                        path.pop_back();
+                }
+            }
+            else {
+                path.clear();
+            }
 
-			if (e->stats.charge_speed == 0.0f) {
-				e->stats.direction = Utils::calcDirection(e->stats.pos.x, e->stats.pos.y, pursue_pos.x, pursue_pos.y);
-			}
-			turn_timer.reset(Timer::BEGIN);
-		}
-	}
+            if (e->stats.charge_speed == 0.0f) {
+                e->stats.direction = Utils::calcDirection(e->stats.pos.x, e->stats.pos.y, pursue_pos.x, pursue_pos.y);
+            }
+            turn_timer.reset(Timer::BEGIN);
+        }
+    }
 
-	e->stats.flee_timer.tick();
-	e->stats.flee_cooldown_timer.tick();
+    e->stats.flee_timer.tick();
+    e->stats.flee_cooldown_timer.tick();
 
-	// try to start moving
-	if (e->stats.cur_state == StatBlock::ENTITY_STANCE) {
-		checkMoveStateStance();
-	}
+    // try to start moving
+    if (e->stats.cur_state == StatBlock::ENTITY_STANCE) {
+        checkMoveStateStance();
+    }
 
-	// already moving
-	else if (e->stats.cur_state == StatBlock::ENTITY_MOVE) {
-		checkMoveStateMove();
-	}
+    // already moving
+    else if (e->stats.cur_state == StatBlock::ENTITY_MOVE) {
+        checkMoveStateMove();
+    }
 
-	// if patrolling waypoints and has reached a waypoint, cycle to the next one
-	if (!e->stats.waypoints.empty()) {
-		// if the patroller is close to the waypoint
-		FPoint waypoint = e->stats.waypoints.front();
-		float waypoint_dist = Utils::calcDist(waypoint, e->stats.pos);
+    // if patrolling waypoints and has reached a waypoint, cycle to the next one
+    if (!e->stats.waypoints.empty()) {
+        // if the patroller is close to the waypoint
+        FPoint waypoint = e->stats.waypoints.front();
+        float waypoint_dist = Utils::calcDist(waypoint, e->stats.pos);
 
-		FPoint saved_pos = e->stats.pos;
-		e->move();
-		float new_dist = Utils::calcDist(waypoint, e->stats.pos);
-		e->stats.pos = saved_pos;
+        FPoint saved_pos = e->stats.pos;
+        e->move();
+        float new_dist = Utils::calcDist(waypoint, e->stats.pos);
+        e->stats.pos = saved_pos;
 
-		if (waypoint_dist <= real_speed || (waypoint_dist <= 0.5f && new_dist > waypoint_dist)) {
-			e->stats.pos = waypoint;
-			turn_timer.reset(Timer::END);
-			e->stats.waypoints.pop();
-			// pick a new random point if we're wandering
-			if (e->stats.wander) {
-				waypoint = getWanderPoint();
-			}
-			e->stats.waypoints.push(waypoint);
-			e->stats.waypoint_timer.reset(Timer::BEGIN);
-		}
-	}
+        if (waypoint_dist <= real_speed || (waypoint_dist <= 0.5f && new_dist > waypoint_dist)) {
+            e->stats.pos = waypoint;
+            turn_timer.reset(Timer::END);
+            e->stats.waypoints.pop();
+            // pick a new random point if we're wandering
+            if (e->stats.wander) {
+                waypoint = getWanderPoint();
+            }
+            e->stats.waypoints.push(waypoint);
+            e->stats.waypoint_timer.reset(Timer::BEGIN);
+        }
+    }
 
-	// re-block current space to allow correct movement
-	mapr->collider.block(e->stats.pos.x, e->stats.pos.y, e->stats.hero_ally);
+    // re-block current space to allow correct movement
+    mapr->collider.block(e->stats.pos.x, e->stats.pos.y, e->stats.hero_ally);
 
 }
 
 void EntityBehavior::checkMoveStateStance() {
+   
+    if (target_dist >= e->stats.flee_range && e->stats.chance_flee > 0 && e->stats.waypoints.empty()) return;
 
-	// If the enemy is capable of fleeing and is at a safe distance, have it hold its position instead of moving
-	if (target_dist >= e->stats.flee_range && e->stats.chance_flee > 0 && e->stats.waypoints.empty()) return;
+    // try to move to the target if we're either:
+    // 1. too far away and chance_pursue roll succeeds
+    // 2. within range, but lack line-of-sight (required to attack)
+    bool ally_targeting_hero = e->stats.hero_ally && !e->stats.in_combat && hero_dist > ALLY_FOLLOW_DISTANCE_WALK;
+    bool should_move_to_target = (e->stats.in_combat || !e->stats.waypoints.empty()) && ((target_dist > e->stats.melee_range && Math::percentChanceF(e->stats.chance_pursue)) || (target_dist <= e->stats.melee_range && !los));
 
-	// try to move to the target if we're either:
-	// 1. too far away and chance_pursue roll succeeds
-	// 2. within range, but lack line-of-sight (required to attack)
-	bool ally_targeting_hero = e->stats.hero_ally && !e->stats.in_combat && hero_dist > ALLY_FOLLOW_DISTANCE_WALK;
-	bool should_move_to_target = (e->stats.in_combat || !e->stats.waypoints.empty()) && ((target_dist > e->stats.melee_range && Math::percentChanceF(e->stats.chance_pursue)) || (target_dist <= e->stats.melee_range && !los));
+    if (should_move_to_target || fleeing || ally_targeting_hero) {
+        if (e->move()) {
+            e->stats.cur_state = StatBlock::ENTITY_MOVE;
+        }
+        else {
+            collided = true;
+            unsigned char prev_direction = e->stats.direction;
 
-	if (should_move_to_target || fleeing || ally_targeting_hero) {
-
-		if (e->move()) {
-			e->stats.cur_state = StatBlock::ENTITY_MOVE;
-		}
-		else {
-			collided = true;
-			unsigned char prev_direction = e->stats.direction;
-
-			// hit an obstacle, try the next best angle
-			e->stats.direction = e->faceNextBest(pursue_pos.x, pursue_pos.y);
-			if (e->move()) {
-				e->stats.cur_state = StatBlock::ENTITY_MOVE;
-			}
-			else
-				e->stats.direction = prev_direction;
-		}
-	}
+            // hit an obstacle, try the next best angle
+            e->stats.direction = e->faceNextBest(pursue_pos.x, pursue_pos.y);
+            if (e->move()) {
+                e->stats.cur_state = StatBlock::ENTITY_MOVE;
+            }
+            else
+                e->stats.direction = prev_direction;
+        }
+    }
 }
 
+
+
 void EntityBehavior::checkMoveStateMove() {
-	bool can_attack = true;
+    bool can_attack = true;
 
-	if (!e->stats.cooldown.isEnd()) {
-		can_attack = false;
-	}
-	else {
-		can_attack = false;
-		for (size_t i = 0; i < e->stats.powers_ai.size(); ++i) {
-			if (e->stats.powers_ai[i].cooldown.isEnd()) {
-				can_attack = true;
-				break;
-			}
-		}
-	}
-	// in order to prevent infinite fleeing, we re-roll our chance to flee after a certain duration
-	bool stop_fleeing = can_attack && fleeing && e->stats.flee_timer.isEnd() && !Math::percentChanceF(e->stats.chance_flee);
+    if (!e->stats.cooldown.isEnd()) {
+        can_attack = false;
+    }
+    else {
+        can_attack = false;
+        for (size_t i = 0; i < e->stats.powers_ai.size(); ++i) {
+            if (e->stats.powers_ai[i].cooldown.isEnd()) {
+                can_attack = true;
+                break;
+            }
+        }
+    }
+    // in order to prevent infinite fleeing, we re-roll our chance to flee after a certain duration
+    bool stop_fleeing = can_attack && fleeing && e->stats.flee_timer.isEnd() && !Math::percentChanceF(e->stats.chance_flee);
 
-	if (!stop_fleeing && e->stats.flee_timer.isEnd()) {
-		// if the roll to continue fleeing succeeds, but the flee duration has expired, we don't want to reset the duration to the full amount
-		// instead, we scehdule the next re-roll to happen on the next frame
-		// this will continue until a roll fails, returning to the stance state
-		e->stats.flee_timer.setCurrent(1);
-	}
+    if (!stop_fleeing && e->stats.flee_timer.isEnd()) {
+        // if the roll to continue fleeing succeeds, but the flee duration has expired, we don't want to reset the duration to the full amount
+        // instead, we scehdule the next re-roll to happen on the next frame
+        // this will continue until a roll fails, returning to the stance state
+        e->stats.flee_timer.setCurrent(1);
+    }
 
-	// close enough to the hero or is at a safe distance
-	bool ally_targeting_hero = e->stats.hero_ally && !e->stats.in_combat && !fleeing && hero_dist < ALLY_FOLLOW_DISTANCE_STOP;
-	if (pc->stats.alive && ((target_dist < e->stats.melee_range && !fleeing) || (move_to_safe_dist && target_dist >= e->stats.flee_range) || stop_fleeing || ally_targeting_hero)) {
-		if (stop_fleeing) {
-			e->stats.flee_cooldown_timer.reset(Timer::BEGIN);
-		}
-		e->stats.cur_state = StatBlock::ENTITY_STANCE;
-		move_to_safe_dist = false;
-		fleeing = false;
-	}
+    // close enough to the hero or is at a safe distance
+    bool ally_targeting_hero = e->stats.hero_ally && !e->stats.in_combat && !fleeing && hero_dist < ALLY_FOLLOW_DISTANCE_STOP;
+    if (pc->stats.alive && ((target_dist < e->stats.melee_range && !fleeing) || (move_to_safe_dist && target_dist >= e->stats.flee_range) || stop_fleeing || ally_targeting_hero)) {
+        if (stop_fleeing) {
+            e->stats.flee_cooldown_timer.reset(Timer::BEGIN);
+        }
+        e->stats.cur_state = StatBlock::ENTITY_STANCE;
+        move_to_safe_dist = false;
+        fleeing = false;
+    }
 
-	// try to continue moving
-	else if (!e->move()) {
-		collided = true;
-		unsigned char prev_direction = e->stats.direction;
-		// hit an obstacle.  Try the next best angle
-		e->stats.direction = e->faceNextBest(pursue_pos.x, pursue_pos.y);
-		if (!e->move()) {
-			// this prevents an ally trying to move perpendicular to a 1-tile-wide path if the player gets close to it in a certain position and gets blocked
-			if (e->stats.hero_ally && entitym->player_blocked && !e->stats.in_combat) {
-				e->stats.direction = pc->stats.direction;
-				if (!e->move()) {
-					e->stats.cur_state = StatBlock::ENTITY_STANCE;
-					e->stats.direction = prev_direction;
-				}
-			}
-			else {
-				e->stats.cur_state = StatBlock::ENTITY_STANCE;
-				e->stats.direction = prev_direction;
-			}
-		}
-	}
+    // try to continue moving
+    else if (!e->move()) {
+        collided = true;
+        unsigned char prev_direction = e->stats.direction;
+        // hit an obstacle.  Try the next best angle
+        e->stats.direction = e->faceNextBest(pursue_pos.x, pursue_pos.y);
+        if (!e->move()) {
+            // this prevents an ally trying to move perpendicular to a 1-tile-wide path if the player gets close to it in a certain position and gets blocked
+            if (e->stats.hero_ally && entitym->player_blocked && !e->stats.in_combat) {
+                e->stats.direction = pc->stats.direction;
+                if (!e->move()) {
+                    e->stats.cur_state = StatBlock::ENTITY_STANCE;
+                    e->stats.direction = prev_direction;
+                }
+            }
+            else {
+                e->stats.cur_state = StatBlock::ENTITY_STANCE;
+                e->stats.direction = prev_direction;
+            }
+        }
+    }
 }
 
 
@@ -686,225 +758,225 @@ void EntityBehavior::checkMoveStateMove() {
  */
 void EntityBehavior::updateState() {
 
-	// stunned enemies can't act
-	if (e->stats.effects.stun) return;
+    // stunned enemies can't act
+    if (e->stats.effects.stun) return;
 
-	PowerID power_id, power_id_base;
-	Power* epower;
-	int power_state;
+    PowerID power_id, power_id_base;
+    Power* epower;
+    int power_state;
 
-	// continue current animations
-	if (e->activeAnimation)
-		e->activeAnimation->advanceFrame();
+    // continue current animations
+    if (e->activeAnimation)
+        e->activeAnimation->advanceFrame();
 
-	for (size_t i = 0; i < e->anims.size(); ++i) {
-		if (e->anims[i])
-			e->anims[i]->advanceFrame();
-	}
+    for (size_t i = 0; i < e->anims.size(); ++i) {
+        if (e->anims[i])
+            e->anims[i]->advanceFrame();
+    }
 
-	switch (e->stats.cur_state) {
+    switch (e->stats.cur_state) {
 
-		case StatBlock::ENTITY_STANCE:
+        case StatBlock::ENTITY_STANCE:
 
-			e->setAnimation("stance");
-			break;
+            e->setAnimation("stance");
+            break;
 
-		case StatBlock::ENTITY_MOVE:
+        case StatBlock::ENTITY_MOVE:
 
-			e->setAnimation("run");
-			break;
+            e->setAnimation("run");
+            break;
 
-		case StatBlock::ENTITY_POWER:
+        case StatBlock::ENTITY_POWER:
 
-			if (e->stats.activated_power == NULL) {
-				e->stats.cur_state = StatBlock::ENTITY_STANCE;
-				break;
-			}
+            if (e->stats.activated_power == NULL) {
+                e->stats.cur_state = StatBlock::ENTITY_STANCE;
+                break;
+            }
 
-			power_id = replaced_power_id;
-			power_id_base = e->stats.activated_power->id;
+            power_id = replaced_power_id;
+            power_id_base = e->stats.activated_power->id;
 
-			if (!powers->isValid(power_id) || !powers->isValid(power_id_base)) {
-				e->stats.cur_state = StatBlock::ENTITY_STANCE;
-				break;
-			}
+            if (!powers->isValid(power_id) || !powers->isValid(power_id_base)) {
+                e->stats.cur_state = StatBlock::ENTITY_STANCE;
+                break;
+            }
 
-			epower = powers->powers[power_id];
-			power_state = epower->new_state;
-			e->stats.prevent_interrupt = epower->prevent_interrupt;
+            epower = powers->powers[power_id];
+            power_state = epower->new_state;
+            e->stats.prevent_interrupt = epower->prevent_interrupt;
 
-			// animation based on power type
-			if (power_state == Power::STATE_INSTANT)
-				instant_power = true;
-			else if (power_state == Power::STATE_ATTACK)
-				e->setAnimation(epower->attack_anim);
+            // animation based on power type
+            if (power_state == Power::STATE_INSTANT)
+                instant_power = true;
+            else if (power_state == Power::STATE_ATTACK)
+                e->setAnimation(epower->attack_anim);
 
-			// sound effect based on power type
-			if (e->activeAnimation->isFirstFrame()) {
-				// pre power
-				for (size_t i = 0; i < epower->chain_powers.size(); ++i) {
-					ChainPower& chain_power = epower->chain_powers[i];
-					if (chain_power.type == ChainPower::TYPE_PRE && Math::percentChanceF(chain_power.chance)) {
-						powers->activate(chain_power.id, &e->stats, e->stats.pos, pursue_pos);
-					}
-				}
+            // sound effect based on power type
+            if (e->activeAnimation->isFirstFrame()) {
+                // pre power
+                for (size_t i = 0; i < epower->chain_powers.size(); ++i) {
+                    ChainPower& chain_power = epower->chain_powers[i];
+                    if (chain_power.type == ChainPower::TYPE_PRE && Math::percentChanceF(chain_power.chance)) {
+                        powers->activate(chain_power.id, &e->stats, e->stats.pos, pursue_pos);
+                    }
+                }
 
-				float attack_speed = (e->stats.effects.getAttackSpeed(epower->attack_anim) * epower->attack_speed) / 100.0f;
-				e->activeAnimation->setSpeed(attack_speed);
-				e->playAttackSound(epower->attack_anim);
+                float attack_speed = (e->stats.effects.getAttackSpeed(epower->attack_anim) * epower->attack_speed) / 100.0f;
+                e->activeAnimation->setSpeed(attack_speed);
+                e->playAttackSound(epower->attack_anim);
 
-				if (epower->state_duration > 0)
-					e->stats.state_timer.setDuration(epower->state_duration);
+                if (epower->state_duration > 0)
+                    e->stats.state_timer.setDuration(epower->state_duration);
 
-				if (epower->charge_speed != 0.0f)
-					e->stats.charge_speed = epower->charge_speed;
-			}
+                if (epower->charge_speed != 0.0f)
+                    e->stats.charge_speed = epower->charge_speed;
+            }
 
-			// Activate Power:
-			// if we're at the active frame of a power animation,
-			// activate the power and set the local and global cooldowns
-			if ((e->activeAnimation->isActiveFrame() || instant_power) && !e->stats.hold_state) {
-				powers->activate(power_id, &e->stats, e->stats.pos, pursue_pos);
+            // Activate Power:
+            // if we're at the active frame of a power animation,
+            // activate the power and set the local and global cooldowns
+            if ((e->activeAnimation->isActiveFrame() || instant_power) && !e->stats.hold_state) {
+                powers->activate(power_id, &e->stats, e->stats.pos, pursue_pos);
 
-				// set cooldown for all ai powers with the same power id
-				for (size_t i = 0; i < e->stats.powers_ai.size(); ++i) {
-					if (e->stats.activated_power->id == e->stats.powers_ai[i].id) {
-						e->stats.powers_ai[i].cooldown.setDuration(epower->cooldown);
-					}
-				}
+                // set cooldown for all ai powers with the same power id
+                for (size_t i = 0; i < e->stats.powers_ai.size(); ++i) {
+                    if (e->stats.activated_power->id == e->stats.powers_ai[i].id) {
+                        e->stats.powers_ai[i].cooldown.setDuration(epower->cooldown);
+                    }
+                }
 
-				if (e->stats.activated_power->type == StatBlock::AI_POWER_HALF_DEAD) {
-					e->stats.half_dead_power = false;
-				}
+                if (e->stats.activated_power->type == StatBlock::AI_POWER_HALF_DEAD) {
+                    e->stats.half_dead_power = false;
+                }
 
-				if (!e->stats.state_timer.isEnd())
-					e->stats.hold_state = true;
-			}
+                if (!e->stats.state_timer.isEnd())
+                    e->stats.hold_state = true;
+            }
 
-			// animation is finished
-			if ((e->activeAnimation->isLastFrame() && e->stats.state_timer.isEnd()) || (power_state == Power::STATE_ATTACK && e->activeAnimation->getName() != epower->attack_anim) || instant_power) {
-				if (!instant_power)
-					e->stats.cooldown.reset(Timer::BEGIN);
-				else
-					instant_power = false;
+            // animation is finished
+            if ((e->activeAnimation->isLastFrame() && e->stats.state_timer.isEnd()) || (power_state == Power::STATE_ATTACK && e->activeAnimation->getName() != epower->attack_anim) || instant_power) {
+                if (!instant_power)
+                    e->stats.cooldown.reset(Timer::BEGIN);
+                else
+                    instant_power = false;
 
-				e->stats.activated_power = NULL;
-				e->stats.prevent_interrupt = false;
-				if (e->stats.hp > 0) {
-					e->stats.cur_state = StatBlock::ENTITY_STANCE;
-				}
-			}
-			break;
+                e->stats.activated_power = NULL;
+                e->stats.prevent_interrupt = false;
+                if (e->stats.hp > 0) {
+                    e->stats.cur_state = StatBlock::ENTITY_STANCE;
+                }
+            }
+            break;
 
-		case StatBlock::ENTITY_SPAWN:
+        case StatBlock::ENTITY_SPAWN:
 
-			e->setAnimation("spawn");
-			//the second check is needed in case the entity does not have a spawn animation
-			if (e->activeAnimation->isLastFrame() || e->activeAnimation->getName() != "spawn") {
-				e->stats.cur_state = StatBlock::ENTITY_STANCE;
-			}
-			break;
+            e->setAnimation("spawn");
+            //the second check is needed in case the entity does not have a spawn animation
+            if (e->activeAnimation->isLastFrame() || e->activeAnimation->getName() != "spawn") {
+                e->stats.cur_state = StatBlock::ENTITY_STANCE;
+            }
+            break;
 
-		case StatBlock::ENTITY_BLOCK:
+        case StatBlock::ENTITY_BLOCK:
 
-			e->setAnimation("block");
-			break;
+            e->setAnimation("block");
+            break;
 
-		case StatBlock::ENTITY_HIT:
+        case StatBlock::ENTITY_HIT:
 
-			e->setAnimation("hit");
-			if (e->activeAnimation->isFirstFrame()) {
-				e->stats.effects.triggered_hit = true;
-			}
-			if (e->activeAnimation->isLastFrame() || e->activeAnimation->getName() != "hit")
-				e->stats.cur_state = StatBlock::ENTITY_STANCE;
-			break;
+            e->setAnimation("hit");
+            if (e->activeAnimation->isFirstFrame()) {
+                e->stats.effects.triggered_hit = true;
+            }
+            if (e->activeAnimation->isLastFrame() || e->activeAnimation->getName() != "hit")
+                e->stats.cur_state = StatBlock::ENTITY_STANCE;
+            break;
 
-		case StatBlock::ENTITY_DEAD:
-			if (e->stats.effects.triggered_death) break;
+        case StatBlock::ENTITY_DEAD:
+            if (e->stats.effects.triggered_death) break;
 
-			e->setAnimation("die");
-			if (e->activeAnimation->isFirstFrame()) {
-				e->playSound(Entity::SOUND_DIE);
-				e->stats.corpse_timer.setDuration(eset->misc.corpse_timeout);
-			}
-			if (e->activeAnimation->isSecondLastFrame()) {
-				StatBlock::AIPower* ai_power = e->stats.getAIPower(StatBlock::AI_POWER_DEATH);
-				if (ai_power != NULL)
-					powers->activate(ai_power->id, &e->stats, e->stats.pos, e->stats.pos);
+            e->setAnimation("die");
+            if (e->activeAnimation->isFirstFrame()) {
+                e->playSound(Entity::SOUND_DIE);
+                e->stats.corpse_timer.setDuration(eset->misc.corpse_timeout);
+            }
+            if (e->activeAnimation->isSecondLastFrame()) {
+                StatBlock::AIPower* ai_power = e->stats.getAIPower(StatBlock::AI_POWER_DEATH);
+                if (ai_power != NULL)
+                    powers->activate(ai_power->id, &e->stats, e->stats.pos, e->stats.pos);
 
-				e->stats.effects.clearEffects();
-			}
-			if (e->activeAnimation->isLastFrame() || e->activeAnimation->getName() != "die") {
-				// puts renderable under object layer
-				e->stats.corpse = true;
+                e->stats.effects.clearEffects();
+            }
+            if (e->activeAnimation->isLastFrame() || e->activeAnimation->getName() != "die") {
+                // puts renderable under object layer
+                e->stats.corpse = true;
 
-				//allow free movement over the corpse
-				mapr->collider.unblock(e->stats.pos.x, e->stats.pos.y);
+                //allow free movement over the corpse
+                mapr->collider.unblock(e->stats.pos.x, e->stats.pos.y);
 
-				// remove corpses that land on blocked tiles, such as water or pits
-				if (!mapr->collider.isValidPosition(e->stats.pos.x, e->stats.pos.y, MapCollision::MOVE_NORMAL, MapCollision::ENTITY_COLLIDE_ALL)) {
-					e->stats.corpse_timer.reset(Timer::END);
-				}
+                // remove corpses that land on blocked tiles, such as water or pits
+                if (!mapr->collider.isValidPosition(e->stats.pos.x, e->stats.pos.y, MapCollision::MOVE_NORMAL, MapCollision::ENTITY_COLLIDE_ALL)) {
+                    e->stats.corpse_timer.reset(Timer::END);
+                }
 
-				// prevent "jumping" when rendering
-				e->stats.pos.align();
-			}
+                // prevent "jumping" when rendering
+                e->stats.pos.align();
+            }
 
-			break;
+            break;
 
-		case StatBlock::ENTITY_CRITDEAD:
+        case StatBlock::ENTITY_CRITDEAD:
 
-			e->setAnimation("critdie");
-			if (e->activeAnimation->isFirstFrame()) {
-				e->playSound(Entity::SOUND_CRITDIE);
-				e->stats.corpse_timer.setDuration(eset->misc.corpse_timeout);
-			}
-			if (e->activeAnimation->isSecondLastFrame()) {
-				StatBlock::AIPower* ai_power = e->stats.getAIPower(StatBlock::AI_POWER_DEATH);
-				if (ai_power != NULL)
-					powers->activate(ai_power->id, &e->stats, e->stats.pos, e->stats.pos);
+            e->setAnimation("critdie");
+            if (e->activeAnimation->isFirstFrame()) {
+                e->playSound(Entity::SOUND_CRITDIE);
+                e->stats.corpse_timer.setDuration(eset->misc.corpse_timeout);
+            }
+            if (e->activeAnimation->isSecondLastFrame()) {
+                StatBlock::AIPower* ai_power = e->stats.getAIPower(StatBlock::AI_POWER_DEATH);
+                if (ai_power != NULL)
+                    powers->activate(ai_power->id, &e->stats, e->stats.pos, e->stats.pos);
 
-				e->stats.effects.clearEffects();
-			}
-			if (e->activeAnimation->isLastFrame() || e->activeAnimation->getName() != "critdie") {
-				// puts renderable under object layer
-				e->stats.corpse = true;
+                e->stats.effects.clearEffects();
+            }
+            if (e->activeAnimation->isLastFrame() || e->activeAnimation->getName() != "critdie") {
+                // puts renderable under object layer
+                e->stats.corpse = true;
 
-				//allow free movement over the corpse
-				mapr->collider.unblock(e->stats.pos.x, e->stats.pos.y);
+                //allow free movement over the corpse
+                mapr->collider.unblock(e->stats.pos.x, e->stats.pos.y);
 
-				// prevent "jumping" when rendering
-				e->stats.pos.align();
-			}
+                // prevent "jumping" when rendering
+                e->stats.pos.align();
+            }
 
-			break;
+            break;
 
-		default:
-			break;
-	}
+        default:
+            break;
+    }
 
-	if (e->stats.state_timer.isEnd() && e->stats.hold_state)
-		e->stats.hold_state = false;
+    if (e->stats.state_timer.isEnd() && e->stats.hold_state)
+        e->stats.hold_state = false;
 
-	if (e->stats.cur_state != StatBlock::ENTITY_POWER && e->stats.charge_speed != 0.0f)
-		e->stats.charge_speed = 0.0f;
+    if (e->stats.cur_state != StatBlock::ENTITY_POWER && e->stats.charge_speed != 0.0f)
+        e->stats.charge_speed = 0.0f;
 }
 
 FPoint EntityBehavior::getWanderPoint() {
-	FPoint waypoint;
-	waypoint.x = static_cast<float>(e->stats.wander_area.x) + static_cast<float>(rand() % (e->stats.wander_area.w)) + 0.5f;
-	waypoint.y = static_cast<float>(e->stats.wander_area.y) + static_cast<float>(rand() % (e->stats.wander_area.h)) + 0.5f;
+    FPoint waypoint;
+    waypoint.x = static_cast<float>(e->stats.wander_area.x) + static_cast<float>(rand() % (e->stats.wander_area.w)) + 0.5f;
+    waypoint.y = static_cast<float>(e->stats.wander_area.y) + static_cast<float>(rand() % (e->stats.wander_area.h)) + 0.5f;
 
-	if (mapr->collider.isValidPosition(waypoint.x, waypoint.y, e->stats.movement_type, mapr->collider.getCollideType(e->stats.hero)) &&
-	    mapr->collider.lineOfMovement(e->stats.pos.x, e->stats.pos.y, waypoint.x, waypoint.y, e->stats.movement_type))
-	{
-		return waypoint;
-	}
-	else {
-		// didn't get a valid waypoint, so keep our current position
-		return e->stats.pos;
-	}
+    if (mapr->collider.isValidPosition(waypoint.x, waypoint.y, e->stats.movement_type, mapr->collider.getCollideType(e->stats.hero)) &&
+        mapr->collider.lineOfMovement(e->stats.pos.x, e->stats.pos.y, waypoint.x, waypoint.y, e->stats.movement_type))
+    {
+        return waypoint;
+    }
+    else {
+        // didn't get a valid waypoint, so keep our current position
+        return e->stats.pos;
+    }
 }
 EntityBehavior::~EntityBehavior() {
 }

@@ -288,7 +288,6 @@ void Entity::move_from_offending_tile() {
  * @return Returns false if wall collision, otherwise true.
  */
 bool Entity::move() {
-
 	move_from_offending_tile();
 
 	if (stats.effects.knockback_speed != 0)

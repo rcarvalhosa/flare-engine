@@ -53,10 +53,13 @@ FLARE.  If not, see http://www.gnu.org/licenses/
 #include "UtilsFileSystem.h"
 #include "UtilsMath.h"
 #include "WidgetTooltip.h"
+#include "CombatManager.h"
 
 #include <stdint.h>
 #include <limits>
 #include <math.h>
+#include <sstream>
+#include <iomanip>
 
 MapRenderer::MapRenderer()
 	: Map()
@@ -385,7 +388,56 @@ void MapRenderer::render(std::vector<Renderable> &r, std::vector<Renderable> &r_
 	}
 
 	drawHiddenEntityMarkers();
+
+	// Draw movement range if in combat and it's player's turn
+	if (pc && pc->stats.in_combat && combat_manager && combat_manager->isPlayerTurn()) {
+		drawMovementRange(pc->stats.pos, 6.0f);
+	}
 }
+
+
+void MapRenderer::drawMovementRange(const FPoint& center, float range) {
+    // Skip if not in combat
+    if (!combat_manager || !combat_manager->isPlayerTurn())
+        return;
+
+    // Get mouse position in map coordinates
+    FPoint mouse_pos = Utils::screenToMap(inpt->mouse.x, inpt->mouse.y, cam.shake.x, cam.shake.y);
+    
+    // Calculate distance from player to mouse cursor
+    float dx = mouse_pos.x - center.x;
+    float dy = mouse_pos.y - center.y;
+    float dist = sqrtf(dx*dx + dy*dy);
+    
+    // Convert positions to screen coordinates for line drawing
+    Point p_start = Utils::mapToScreen(center.x, center.y, cam.shake.x, cam.shake.y);
+    Point p_end = Utils::mapToScreen(mouse_pos.x, mouse_pos.y, cam.shake.x, cam.shake.y);
+
+	Color color;
+    
+    // Draw line from player to cursor
+    if (dist <= range) {
+        // Within movement range - use green
+        color = Color(0, 255, 0, 192);
+    } else {
+        // Outside movement range - use red
+        color = Color(255, 0, 0, 192);
+    }
+    render_device->drawLine(p_start.x, p_start.y, p_end.x, p_end.y, color);
+    
+    // Create tooltip with distance information
+    std::stringstream ss;
+    ss << "Distance: " << std::fixed << std::setprecision(1) << dist << " tiles";
+    if (dist > range) {
+        ss << " (too far)";
+    }
+    
+    // Update tooltip
+    tip_buf.clear();
+    tip_buf.addText(ss.str());
+    tooltipm->context = TooltipManager::CONTEXT_MAP;
+}
+
 
 void MapRenderer::drawRenderable(std::vector<Renderable>::iterator r_cursor) {
 	if (r_cursor->image != NULL) {

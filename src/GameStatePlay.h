@@ -30,6 +30,7 @@ FLARE.  If not, see http://www.gnu.org/licenses/
 #include "CommonIncludes.h"
 #include "GameState.h"
 #include "Utils.h"
+#include "CombatManager.h"
 
 class Avatar;
 class Entity;
@@ -86,6 +87,7 @@ private:
 	void loadTitles();
 	void resetNPC();
 	bool checkPrimaryStat(const std::string& first, const std::string& second);
+	void checkCombatState();
 
 	int npc_id;
 

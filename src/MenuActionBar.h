@@ -45,6 +45,7 @@ private:
 	void setItemCount(unsigned index, int count, bool is_equipped);
 
 	Sprite *sprite_emptyslot;
+	WidgetSlot *end_turn_button;  // dedicated end turn button
 
 	Rect src;
 
@@ -65,7 +66,7 @@ public:
 		MENU_CHARACTER = 0,
 		MENU_INVENTORY = 1,
 		MENU_POWERS = 2,
-		MENU_LOG = 3,
+		MENU_LOG = 3
 	};
 	static const unsigned MENU_COUNT = 4;
 

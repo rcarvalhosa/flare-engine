@@ -1,5 +1,9 @@
 Project (Flare)
-cmake_minimum_required (VERSION 2.8.12)
+cmake_minimum_required (VERSION 3.10)
+
+set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)  # This ensures -std=c++23 instead of -std=gnu++23
 
 Set (PACKAGE "FLARE")
 Set (VERSION "1.14")
@@ -24,7 +28,6 @@ else ()
 	add_compile_options(
 		-Wall -Wextra -Wunused -Wshadow -Woverloaded-virtual -Wunreachable-code -Wconversion -Wno-sign-conversion -Wformat-security
 		-fno-math-errno -fno-exceptions
-		-std=c++98
 	)
 endif ()
 
@@ -125,6 +128,7 @@ Set (FLARE_SOURCES
 	./src/Avatar.cpp
 	./src/Camera.cpp
 	./src/CampaignManager.cpp
+	./src/CombatManager.cpp
 	./src/CombatText.cpp
 	./src/CursorManager.cpp
 	./src/DeviceList.cpp
@@ -241,6 +245,7 @@ Set (FLARE_HEADERS
 	./src/Avatar.h
 	./src/Camera.h
 	./src/CampaignManager.h
+	./src/CombatManager.h
 	./src/CombatText.h
 	./src/CommonIncludes.h
 	./src/CursorManager.h
@@ -362,7 +367,7 @@ If (NOT SDL2MAIN_LIBRARY)
 	Set (SDL2MAIN_LIBRARY "")
 EndIf (NOT SDL2MAIN_LIBRARY)
 
-Target_Link_Libraries (flare ${CMAKE_LD_FLAGS} ${SDL2_LIBRARY} ${SDL2IMAGE_LIBRARY} ${SDL2MIXER_LIBRARY} ${SDL2TTF_LIBRARY} ${SDL2MAIN_LIBRARY})
+Target_Link_Libraries (flare ${CMAKE_LD_FLAGS} ${SDL2_LIBRARY} ${SDL2IMAGE_LIBRARY} ${SDL2MIXER_LIBRARY} ${SDL2TTF_LIBRARY})
 
 
 # installing to the proper places

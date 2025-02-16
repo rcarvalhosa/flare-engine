@@ -78,8 +78,8 @@ private:
 
 	void drawDevCursor();
 	void drawDevHUD();
-
 	void drawHiddenEntityMarkers();
+	void drawMovementRange(const FPoint& center, float range);
 
 	void checkHiddenEntities(const int_fast16_t x, const int_fast16_t y, const Map_Layer& layerdata, std::vector<Renderable> &r);
 

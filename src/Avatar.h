@@ -30,6 +30,7 @@ FLARE.  If not, see http://www.gnu.org/licenses/
 #include "CommonIncludes.h"
 #include "Entity.h"
 #include "Utils.h"
+#include <memory>
 
 class Entity;
 class StatBlock;
@@ -68,6 +69,23 @@ private:
 	void transform();
 	void untransform();
 	void beginPower(PowerID power_id, FPoint* target);
+	
+	void initializeBasicStats();
+	void initializePosition();
+	void initializePowerState();
+	void initializeTransformState();
+	void initializePowers();
+	
+	void loadStepSoundDefinitions();
+
+	void handleMouseMoveDirection();
+	void handleKeyboardDirection();
+	void updateDirectionTimer(int old_dir);
+	bool isValidCombatMove(const FPoint& target);
+	void handlePathfinding();
+	void recalculatePath();
+	bool shouldRecalculatePath();
+	void updatePathTarget();
 
 
 	std::vector<Step_sfx> step_def;
@@ -123,7 +141,7 @@ public:
 	void loadStepFX(const std::string& stepname);
 
 	void logic();
-
+	bool move() override;
 	void checkTransform();
 
 	void logMsg(const std::string& str, int type);
@@ -133,7 +151,7 @@ public:
 	bool isLowHpSoundEnabled();
 	bool isLowHpCursorEnabled();
 
-	std::string getGfxFromType(const std::string& gfx_type);
+	std::string getGfxFromType(const std::string& gfx_type) override;
 
 	std::vector<FPoint>& getPath() { return path; }
 	FPoint& getMMTarget() { return mm_target; };
@@ -160,8 +178,8 @@ public:
 	bool respawn;
 	bool close_menus;
 	bool allow_movement;
-	std::vector<Timer*> power_cooldown_timers;
-	std::vector<Timer*> power_cast_timers;
+	std::vector<std::unique_ptr<Timer>> power_cooldown_timers;
+	std::vector<std::unique_ptr<Timer>> power_cast_timers;
 	Entity* cursor_enemy; // enemy selected with the mouse cursor
 	Entity* lock_enemy;
 	unsigned long time_played;

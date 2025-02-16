@@ -95,6 +95,7 @@ GameStatePlay::GameStatePlay()
 		items = new ItemManager();
 
 	camp = new CampaignManager();
+	combat_manager = new CombatManager();
 
 	loot = new LootManager();
 	powers = new PowerManager();
@@ -1005,8 +1006,27 @@ void GameStatePlay::logic() {
 		mapr->loadMusic();
 		menu->exit->reload_music = false;
 	}
+
+	// Add combat state check
+	checkCombatState();
 }
 
+void GameStatePlay::checkCombatState() {
+	// If we're not in combat and there's a focused enemy
+	if (!combat_manager->isInCombat() && enemy && !enemy->stats.hero_ally) {
+		float dist = Utils::calcDist(pc->stats.pos, enemy->stats.pos);
+		
+		// Enter combat if enemy is in range and hostile
+		if (dist < enemy->stats.threat_range && enemy->stats.combat_style != StatBlock::COMBAT_PASSIVE) {
+			combat_manager->enterCombat(pc, enemy);
+		}
+	}
+	
+	// Update combat manager logic
+	if (combat_manager) {
+		combat_manager->logic();
+	}
+}
 
 /**
  * Render all graphics for a single frame
@@ -1116,8 +1136,8 @@ GameStatePlay::~GameStatePlay() {
 	delete powers;
 	delete fow;
 	delete xp_scaling;
-
 	delete enemyg;
+	delete combat_manager;
 
 	// NULL-ify shared game resources
 	pc = NULL;
@@ -1133,5 +1153,6 @@ GameStatePlay::~GameStatePlay() {
 	powers = NULL;
 	fow = NULL;
 	xp_scaling = NULL;
+	combat_manager = NULL;
 }
 
