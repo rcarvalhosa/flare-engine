@@ -1034,7 +1034,14 @@ void Avatar::handleMoveState() {
  * This includes animation, power activation, and state transitions
  */
 void Avatar::handlePowerState() {
-    setAnimation(attack_anim);
+    
+	// Check if we can take action before doing anything
+    if (stats.in_combat && combat_manager && !combat_manager->canTakeAction()) {
+        stats.cur_state = StatBlock::ENTITY_STANCE;
+        return;
+    }
+
+	setAnimation(attack_anim);
 
     if (!powers->isValid(current_power)) {
         return;
@@ -1079,6 +1086,7 @@ void Avatar::initializePowerExecution(const Power* power) {
 	if (stats.in_combat && combat_manager) {
 		// If cannot take action, return
         if (!combat_manager->canTakeAction()) {
+			stats.cur_state = StatBlock::ENTITY_STANCE;
 			return;
 		}
 		else {		
