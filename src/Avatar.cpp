@@ -947,6 +947,11 @@ void Avatar::handleStanceState() {
 	
 	setAnimation("stance");
 
+	 // Check if we can take action in combat before allowing movement
+    if (stats.in_combat && combat_manager && !combat_manager->canTakeAction()) {
+        return;
+    }
+
 	// allowed to move or use powers?
 	if (settings->mouse_move) {
 		allowed_to_move = restrict_power_use && (!inpt->lock[mm_key] || drag_walking);
