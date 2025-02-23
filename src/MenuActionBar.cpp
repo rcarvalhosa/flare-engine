@@ -743,19 +743,6 @@ void MenuActionBar::processValidAction(unsigned slot_index, ActionData& action, 
         if (!combat_manager->canTakeAction()) {
             return;
         }
-
-        // Count queued actions
-        int queued_actions = 0;
-        for (const ActionData& queued : action_queue) {
-            if (!queued.activated_from_inventory) {
-                queued_actions++;
-            }
-        }
-
-        // Don't queue more actions than we have remaining
-        if (queued_actions >= combat_manager->getTurnState().actions_remaining) {
-            return;
-        }
     }
 
     // Set cooldown
