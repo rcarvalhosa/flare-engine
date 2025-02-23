@@ -44,6 +44,18 @@ private:
 	void addSlot(unsigned index, int x, int y, bool is_locked);
 	void setItemCount(unsigned index, int count, bool is_equipped);
 
+	bool checkMouseMoveTarget(unsigned slot);
+	bool checkActionTrigger(unsigned slot, unsigned mouse_move_slot, bool has_mouse_move_target, ActionData& action, bool& have_aim);
+	void clearQueuedAction(unsigned slot, std::vector<ActionData>& action_queue);
+	void processValidAction(unsigned slot, ActionData& action, bool have_aim, std::vector<ActionData>& action_queue);
+	bool handleClickActivation(unsigned slot_index, ActionData& action);
+	bool checkHotkeyPress(unsigned slot, ActionData& action, bool& have_aim);
+	bool checkResourceRequirements(unsigned slot_index, const Power* power);
+	void setupActionProperties(ActionData& action, const Power* power);
+	void setActionTarget(ActionData& action, const Power* power, bool have_aim, bool has_mouse_move_target);
+	bool canUsePower(unsigned slot_index, const Power* power, const ActionData& action);
+
+
 	Sprite *sprite_emptyslot;
 	WidgetSlot *end_turn_button;  // dedicated end turn button
 

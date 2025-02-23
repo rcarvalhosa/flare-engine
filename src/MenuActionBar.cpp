@@ -561,187 +561,319 @@ void MenuActionBar::remove(const Point& mouse) {
 		}
 	}
 }
+/**
+ * Checks and processes action bar inputs (keyboard, mouse, touch) and adds valid actions to the queue
+ * @param action_queue Vector to store triggered actions
+ */
+void MenuActionBar::checkAction(std::vector<ActionData>& action_queue) {
+    // Configure input state based on settings
+    bool enable_mouse_move = (!settings->mouse_move || inpt->pressing[Input::SHIFT] || inpt->usingTouchscreen());
+    bool enable_main1 = (!inpt->usingTouchscreen() || (!menu->menus_open && menu->touch_controls->checkAllowMain1())) 
+                       && (settings->mouse_move_swap || enable_mouse_move);
+    bool enable_main2 = !settings->mouse_move_swap || enable_mouse_move;
+
+    // Handle mouse movement targeting
+    unsigned mouse_move_slot = settings->mouse_move_swap ? 11 : 10;
+    bool has_mouse_move_target = checkMouseMoveTarget(mouse_move_slot);
+
+    // Process each action bar slot
+    for (unsigned i = 0; i < slots_count; i++) {
+        if (!slots[i]) continue;
+
+        ActionData action;
+        action.hotkey = i;
+        bool have_aim = false;
+        slot_activated[i] = false;
+
+        // Check if action was triggered
+        if (!checkActionTrigger(i, mouse_move_slot, has_mouse_move_target, action, have_aim)) {
+            clearQueuedAction(i, action_queue);
+            continue;
+        }
+
+        // Validate and queue the action
+        if (powers->isValid(action.power)) {
+            processValidAction(i, action, have_aim, action_queue);
+        }
+    }
+}
 
 /**
- * If pressing an action key (keyboard or mouseclick) and the power can be used,
- * add that power to the action queue
+ * Checks if there is a valid mouse move target and updates player state
  */
-void MenuActionBar::checkAction(std::vector<ActionData> &action_queue) {
-	bool enable_mm_attack = (!settings->mouse_move || inpt->pressing[Input::SHIFT] || inpt->usingTouchscreen());
-	bool enable_main1 = (!inpt->usingTouchscreen() || (!menu->menus_open && menu->touch_controls->checkAllowMain1())) && (settings->mouse_move_swap || enable_mm_attack);
-	bool enable_main2 = !settings->mouse_move_swap || enable_mm_attack;
+bool MenuActionBar::checkMouseMoveTarget(unsigned mm_slot) {
+    if (!settings->mouse_move) return false;
 
-	unsigned mm_slot = settings->mouse_move_swap ? 11 : 10;
-	bool mouse_move_target = false;
-	if (settings->mouse_move) {
-		mouse_move_target = pc->mm_target_object == Avatar::MM_TARGET_ENTITY &&
-		                    powers->checkCombatRange(powers->checkReplaceByEffect(hotkeys_mod[mm_slot], &pc->stats), &pc->stats, pc->mm_target_object_pos) &&
-		                    mapr->collider.lineOfSight(pc->stats.pos.x, pc->stats.pos.y, pc->mm_target_object_pos.x, pc->mm_target_object_pos.y);
+    bool has_target = pc->mm_target_object == Avatar::MM_TARGET_ENTITY &&
+                     powers->checkCombatRange(powers->checkReplaceByEffect(hotkeys_mod[mm_slot], &pc->stats), 
+                                           &pc->stats, pc->mm_target_object_pos) &&
+                     mapr->collider.lineOfSight(pc->stats.pos.x, pc->stats.pos.y, 
+                                              pc->mm_target_object_pos.x, pc->mm_target_object_pos.y);
 
-		if (mouse_move_target && pc->stats.cur_state == StatBlock::ENTITY_MOVE) {
-			pc->stats.cur_state = StatBlock::ENTITY_STANCE;
-		}
-		else if (!mouse_move_target && pc->mm_target_object == Avatar::MM_TARGET_ENTITY && pc->stats.cur_state == StatBlock::ENTITY_STANCE) {
-			pc->stats.cur_state = StatBlock::ENTITY_MOVE;
-		}
-	}
+    // Update player state based on target
+    if (has_target && pc->stats.cur_state == StatBlock::ENTITY_MOVE) {
+        pc->stats.cur_state = StatBlock::ENTITY_STANCE;
+    }
+    else if (!has_target && pc->mm_target_object == Avatar::MM_TARGET_ENTITY && 
+             pc->stats.cur_state == StatBlock::ENTITY_STANCE) {
+        pc->stats.cur_state = StatBlock::ENTITY_MOVE;
+    }
 
-	// check click and hotkey actions
-	for (unsigned i = 0; i < slots_count; i++) {
-		ActionData action;
-		action.hotkey = i;
-		bool have_aim = false;
-		slot_activated[i] = false;
+    return has_target;
+}
 
-		if (!slots[i]) continue;
+/**
+ * Checks various input methods to determine if an action was triggered
+ */
+bool MenuActionBar::checkActionTrigger(unsigned slot_index, unsigned mm_slot, bool has_mouse_target,
+                                     ActionData& action, bool& have_aim) {
+    // Mouse move targeting
+    if (slot_index == mm_slot && has_mouse_target) {
+        action.power = hotkeys_mod[slot_index];
+        have_aim = true;
+        return true;
+    }
 
-		if (i == mm_slot && mouse_move_target) {
-			action.power = hotkeys_mod[i];
-			have_aim = true;
-		}
-		// part two of two step activation
-		else if (static_cast<unsigned>(twostep_slot) == i && inpt->pressing[Input::MAIN1] && !inpt->lock[Input::MAIN1]) {
-			have_aim = true;
-			action.power = hotkeys_mod[i];
-			twostep_slot = -1;
-			inpt->lock[Input::MAIN1] = true;
-		}
+    // Two-step activation (for targeted powers)
+    if (static_cast<unsigned>(twostep_slot) == slot_index && 
+        inpt->pressing[Input::MAIN1] && !inpt->lock[Input::MAIN1]) {
+        action.power = hotkeys_mod[slot_index];
+        have_aim = true;
+        twostep_slot = -1;
+        inpt->lock[Input::MAIN1] = true;
+        return true;
+    }
 
-		// mouse/touch click
-		else if ((inpt->mode == InputState::MODE_TOUCHSCREEN && touch_slot == slots[i]) || (inpt->mode != InputState::MODE_TOUCHSCREEN && inpt->usingMouse() && slots[i]->checkClick() == WidgetSlot::ACTIVATE)) {
-			touch_slot = NULL;
-			have_aim = false;
-			slot_activated[i] = true;
-			action.power = hotkeys_mod[i];
+    // Touch/mouse click
+    if ((inpt->mode == InputState::MODE_TOUCHSCREEN && touch_slot == slots[slot_index]) ||
+        (inpt->mode != InputState::MODE_TOUCHSCREEN && inpt->usingMouse() && 
+         slots[slot_index]->checkClick() == WidgetSlot::ACTIVATE)) {
+        return handleClickActivation(slot_index, action);
+    }
 
-			// if a power requires a fixed target (like teleportation), break up activation into two parts
-			// the first step is to mark the slot that was clicked on
-			// NOTE only works for enabled slots
-			if (powers->isValid(action.power)) {
-				const Power* power = powers->powers[action.power];
-				if (power->starting_pos == Power::STARTING_POS_TARGET || power->buff_teleport) {
-					if (slots[i]->enabled) {
-						twostep_slot = i;
-						action.power = 0;
-					}
-					else {
-						twostep_slot = -1;
-						action.power = 0;
-					}
-				}
-				else {
-					twostep_slot = -1;
-				}
-			}
-		}
+    // Joystick/keyboard
+    if (!inpt->usingMouse() && slots[slot_index]->checkClick() == WidgetSlot::ACTIVATE) {
+        action.power = hotkeys_mod[slot_index];
+        slot_activated[slot_index] = true;
+        twostep_slot = -1;
+        return true;
+    }
 
-		// joystick/keyboard action button
-		else if (!inpt->usingMouse() && slots[i]->checkClick() == WidgetSlot::ACTIVATE) {
-			have_aim = false;
-			slot_activated[i] = true;
-			action.power = hotkeys_mod[i];
-			twostep_slot = -1;
-		}
+    // Hotkey press
+    return checkHotkeyPress(slot_index, action, have_aim);
+}
 
-		// pressing hotkey
-		else if (i<10 && inpt->pressing[i + Input::BAR_1]) {
-			have_aim = inpt->usingMouse();
-			action.power = hotkeys_mod[i];
-			twostep_slot = -1;
-		}
-		else if (i==10 && inpt->pressing[Input::MAIN1] && !inpt->lock[Input::MAIN1] && !Utils::isWithinRect(window_area, inpt->mouse) && enable_main1) {
-			have_aim = inpt->usingMouse();
-			action.power = hotkeys_mod[10];
-			twostep_slot = -1;
-		}
-		else if (i==11 && inpt->pressing[Input::MAIN2] && !inpt->lock[Input::MAIN2] && !Utils::isWithinRect(window_area, inpt->mouse) && enable_main2) {
-			have_aim = inpt->usingMouse();
-			action.power = hotkeys_mod[11];
-			twostep_slot = -1;
-		}
+bool MenuActionBar::checkHotkeyPress(unsigned slot_index, ActionData& action, bool& have_aim) {
+    bool pressed = false;
 
-		// a power slot was activated
-		if (powers->isValid(action.power)) {
-			const Power* power = powers->powers[action.power];
+    // Number bar (0-9)
+    if (slot_index < 10) {
+        pressed = inpt->pressing[slot_index + Input::BAR_1];
+    }
+    // Main1 slot
+    else if (slot_index == 10) {
+        bool enable_main1 = !settings->mouse_move_swap || settings->mouse_move;
+        // Only trigger power if mouse movement is disabled or SHIFT is held
+        pressed = inpt->pressing[Input::MAIN1] && 
+                 !inpt->lock[Input::MAIN1] && 
+                 !Utils::isWithinRect(window_area, inpt->mouse) && 
+                 (!settings->mouse_move || inpt->pressing[Input::SHIFT]) &&
+                 enable_main1;
+    }
+    // Main2 slot
+    else if (slot_index == 11) {
+        bool enable_main2 = !settings->mouse_move_swap || settings->mouse_move;
+        pressed = inpt->pressing[Input::MAIN2] && 
+                 !inpt->lock[Input::MAIN2] && 
+                 !Utils::isWithinRect(window_area, inpt->mouse) && 
+                 (!settings->mouse_move || inpt->pressing[Input::SHIFT]) &&
+                 enable_main2;
+    }
 
-			bool not_enough_resources = false;
-			if (pc->stats.mp < power->requires_mp && slot_fail_cooldown[i] == 0) {
-				pc->logMsg(msg->get("Not enough MP."), Avatar::MSG_NORMAL);
-				not_enough_resources = true;
-			}
-			for (size_t j = 0; j < eset->resource_stats.list.size(); ++j) {
-				if (pc->stats.resource_stats[j] < power->requires_resource_stat[j] && slot_fail_cooldown[i] == 0) {
-					pc->logMsg(eset->resource_stats.list[j].text_log_low, Avatar::MSG_NORMAL);
-					not_enough_resources = true;
-				}
-			}
+    if (pressed) {
+        have_aim = inpt->usingMouse();
+        action.power = hotkeys_mod[slot_index];
+        twostep_slot = -1;
+        return true;
+    }
 
-			if (not_enough_resources) {
-				slot_fail_cooldown[i] = settings->max_frames_per_sec;
-				snd->play(sfx_unable_to_cast, "ACT_NO_MP", snd->NO_POS, !snd->LOOP);
-				continue;
-			}
+    return false;
+}
 
-			slot_fail_cooldown[i] = pc->power_cast_timers[action.power]->getDuration();
+/**
+ * Handles click-based power activation and two-step targeting
+ */
+bool MenuActionBar::handleClickActivation(unsigned slot_index, ActionData& action) {
+    touch_slot = nullptr;
+    slot_activated[slot_index] = true;
+    action.power = hotkeys_mod[slot_index];
 
-			action.instant_item = false;
-			if (power->new_state == Power::STATE_INSTANT) {
-				for (size_t j = 0; j < power->required_items.size(); ++j) {
-					if (power->required_items[j].id > 0 && !power->required_items[j].equipped) {
-						action.instant_item = true;
-						break;
-					}
-				}
-			}
+    if (!powers->isValid(action.power)) return true;
 
-			// set the target depending on how the power was triggered
-			if (have_aim && settings->mouse_aim && !inpt->usingTouchscreen()) {
-				action.target = pc->stats.pos;
+    const Power* power = powers->powers[action.power];
+    if (power->starting_pos == Power::STARTING_POS_TARGET || power->buff_teleport) {
+        twostep_slot = slots[slot_index]->enabled ? slot_index : -1;
+        action.power = 0;
+    }
+    else {
+        twostep_slot = -1;
+    }
 
-				if (power->target_nearest > 0) {
-					if (!power->requires_corpse && powers->checkNearestTargeting(power, &pc->stats, false)) {
-						action.target = pc->stats.target_nearest->pos;
-					}
-					else if (power->requires_corpse && powers->checkNearestTargeting(power, &pc->stats, true)) {
-						action.target = pc->stats.target_nearest_corpse->pos;
-					}
-				}
-				else if (mouse_move_target) {
-					action.target = pc->mm_target_object_pos;
-				}
-				else {
-					if (power->aim_assist)
-						action.target = Utils::screenToMap(inpt->mouse.x,  inpt->mouse.y + eset->misc.aim_assist, mapr->cam.pos.x, mapr->cam.pos.y);
-					else
-						action.target = Utils::screenToMap(inpt->mouse.x,  inpt->mouse.y, mapr->cam.pos.x, mapr->cam.pos.y);
-				}
-			}
-			else {
-				action.target = Utils::calcVector(pc->stats.pos, pc->stats.direction, pc->stats.melee_range);
-			}
+    return true;
+}
 
-			bool can_use_power = slots[i]->enabled &&
-				(power->new_state == Power::STATE_INSTANT || (pc->stats.cooldown.isEnd() && pc->stats.cur_state != StatBlock::ENTITY_POWER && pc->stats.cur_state != StatBlock::ENTITY_HIT)) &&
-				powers->hasValidTarget(action.power, &pc->stats, action.target);
+/**
+ * Processes a valid action, checking resources and adding to queue if possible
+ */
+void MenuActionBar::processValidAction(unsigned slot_index, ActionData& action, bool have_aim,
+                                     std::vector<ActionData>& action_queue) {
+    const Power* power = powers->powers[action.power];
 
-			// add it to the queue
-			if (can_use_power) {
-				if (i != mm_slot && !action.instant_item) {
-					pc->mm_target_object = Avatar::MM_TARGET_NONE;
-				}
+    // Check resource requirements
+    if (!checkResourceRequirements(slot_index, power)) return;
 
-				action_queue.push_back(action);
-			}
-		}
-		else {
-			// if we're not triggering an action that is currently in the queue,
-			// remove it from the queue
-			for (size_t j = action_queue.size(); j > 0; --j) {
-				if (!action_queue[j-1].activated_from_inventory && action_queue[j-1].hotkey == i)
-					action_queue.erase(action_queue.begin()+(j-1));
-			}
-		}
-	}
+    // Check combat turn state
+    if (pc->stats.in_combat && combat_manager) {
+        // Don't queue actions if it's not player's turn
+        if (!combat_manager->isPlayerTurn()) {
+            return;
+        }
+
+        // Don't queue if we're out of actions
+        if (!combat_manager->canTakeAction()) {
+            return;
+        }
+
+        // Count queued actions
+        int queued_actions = 0;
+        for (const ActionData& queued : action_queue) {
+            if (!queued.activated_from_inventory) {
+                queued_actions++;
+            }
+        }
+
+        // Don't queue more actions than we have remaining
+        if (queued_actions >= combat_manager->getTurnState().actions_remaining) {
+            return;
+        }
+    }
+
+    // Set cooldown
+    slot_fail_cooldown[slot_index] = pc->power_cast_timers[action.power]->getDuration();
+
+    // Setup action properties
+    setupActionProperties(action, power);
+
+    // Check if we have a valid mouse move target
+    bool has_mouse_move_target = checkMouseMoveTarget(settings->mouse_move_swap ? 11 : 10);
+
+    // Set target position
+    setActionTarget(action, power, have_aim, has_mouse_move_target);
+
+    // Check if power can be used and add to queue
+	if (canUsePower(slot_index, power, action)) {
+        if (slot_index != settings->mouse_move_swap ? 11 : 10 && !action.instant_item) {
+            pc->mm_target_object = Avatar::MM_TARGET_NONE;
+        }
+        action_queue.push_back(action);
+    }
+}
+
+void MenuActionBar::setupActionProperties(ActionData& action, const Power* power) {
+    action.instant_item = false;
+    if (power->new_state == Power::STATE_INSTANT) {
+        for (size_t j = 0; j < power->required_items.size(); ++j) {
+            if (power->required_items[j].id > 0 && !power->required_items[j].equipped) {
+                action.instant_item = true;
+                break;
+            }
+        }
+    }
+}
+
+
+/**
+ * Checks if the power can be used
+ */
+bool MenuActionBar::canUsePower(unsigned slot_index, const Power* power, const ActionData& action) {
+    return slots[slot_index]->enabled && 
+           (power->new_state == Power::STATE_INSTANT || 
+            (pc->stats.cooldown.isEnd() && 
+             pc->stats.cur_state != StatBlock::ENTITY_POWER && 
+             pc->stats.cur_state != StatBlock::ENTITY_HIT)) &&
+           powers->hasValidTarget(action.power, &pc->stats, action.target);
+}
+
+/**
+ * Sets the target position for the action
+ */
+void MenuActionBar::setActionTarget(ActionData& action, const Power* power, bool have_aim, bool has_mouse_move_target) {
+    // set the target depending on how the power was triggered
+    if (have_aim && settings->mouse_aim && !inpt->usingTouchscreen()) {
+        action.target = pc->stats.pos;
+
+        if (power->target_nearest > 0) {
+            if (!power->requires_corpse && powers->checkNearestTargeting(power, &pc->stats, false)) {
+                action.target = pc->stats.target_nearest->pos;
+            }
+            else if (power->requires_corpse && powers->checkNearestTargeting(power, &pc->stats, true)) {
+                action.target = pc->stats.target_nearest_corpse->pos;
+            }
+        }
+        else if (has_mouse_move_target) {
+            action.target = pc->mm_target_object_pos;
+        }
+        else {
+            if (power->aim_assist)
+                action.target = Utils::screenToMap(inpt->mouse.x,  inpt->mouse.y + eset->misc.aim_assist, 
+                                                 mapr->cam.pos.x, mapr->cam.pos.y);
+            else
+                action.target = Utils::screenToMap(inpt->mouse.x,  inpt->mouse.y, 
+                                                 mapr->cam.pos.x, mapr->cam.pos.y);
+        }
+    }
+    else {
+        action.target = Utils::calcVector(pc->stats.pos, pc->stats.direction, pc->stats.melee_range);
+    }
+}
+
+/**
+ * Checks if the player has enough resources to use the power
+ */
+bool MenuActionBar::checkResourceRequirements(unsigned slot_index, const Power* power) {
+    if (slot_fail_cooldown[slot_index] > 0) return false;
+
+    bool has_resources = true;
+    
+    if (pc->stats.mp < power->requires_mp) {
+        pc->logMsg(msg->get("Not enough MP."), Avatar::MSG_NORMAL);
+        has_resources = false;
+    }
+
+    for (size_t i = 0; i < eset->resource_stats.list.size(); ++i) {
+        if (pc->stats.resource_stats[i] < power->requires_resource_stat[i]) {
+            pc->logMsg(eset->resource_stats.list[i].text_log_low, Avatar::MSG_NORMAL);
+            has_resources = false;
+        }
+    }
+
+    if (!has_resources) {
+        slot_fail_cooldown[slot_index] = settings->max_frames_per_sec;
+        snd->play(sfx_unable_to_cast, "ACT_NO_MP", snd->NO_POS, !snd->LOOP);
+    }
+
+    return has_resources;
+}
+
+/**
+ * Removes an action from the queue if it's no longer valid
+ */
+void MenuActionBar::clearQueuedAction(unsigned slot_index, std::vector<ActionData>& action_queue) {
+    for (size_t i = action_queue.size(); i > 0; --i) {
+        if (!action_queue[i-1].activated_from_inventory && action_queue[i-1].hotkey == slot_index) {
+            action_queue.erase(action_queue.begin() + (i-1));
+        }
+    }
 }
 
 /**

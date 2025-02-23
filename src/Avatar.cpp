@@ -829,18 +829,35 @@ void Avatar::handleStateChanges() {
 }
 
 /**
- * Processes the action queue
+ * Processes the next action in the queue if conditions are met
  */
 void Avatar::handleActionQueue() {
-	for (unsigned i=0; i<action_queue.size(); i++) {
-		ActionData &action = action_queue[i];
-		PowerID replaced_id = powers->checkReplaceByEffect(action.power, &stats);
-		if (replaced_id == 0)
-			continue;
+    if (!action_queue.empty()) {
+        // If in combat, validate turn state before processing actions
+        if (stats.in_combat && combat_manager) {
+            if (!combat_manager->isPlayerTurn() || !combat_manager->canTakeAction()) {
+                return;
+            }
+        }
 
-		handleReplacedPower(replaced_id, action);
-	}
-	action_queue.clear();
+        ActionData& action = action_queue[0];
+        
+        // Process the action
+        if (action.power > 0) {
+            PowerID replaced_id = powers->checkReplaceByEffect(action.power, &stats);
+            if (replaced_id > 0) {
+                handleReplacedPower(replaced_id, action);
+            }
+            else if (powers->powers[action.power]->new_state == Power::STATE_INSTANT) {
+                handleInstantPower(replaced_id, action);
+            }
+            else {
+                beginPower(action.power, &action.target);
+            }
+        }
+        
+        action_queue.erase(action_queue.begin());
+    }
 }
 
 /**
