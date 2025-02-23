@@ -343,9 +343,9 @@ bool CombatManager::isValidMovement(const FPoint& dest) const {
 
 void CombatManager::spendAction() {
     turn_state.actions_remaining--;
-   if (turn_state.actions_remaining <= 0) {
+   /*if (turn_state.actions_remaining <= 0) {
         nextTurn();
-   }
+   }*/
 }
 
 float CombatManager::getMovementRange() const {
