@@ -838,177 +838,246 @@ void GameStatePlay::updateActionBar(unsigned index) {
 		}
 	}
 }
-
 /**
- * Process all actions for a single frame
- * This includes some message passing between child object
+ * Process all actions for a single frame.
+ * Handles game state updates, menu interactions, combat, and character transformations.
+ * This is the main game loop function that coordinates all game systems.
  */
 void GameStatePlay::logic() {
-	if (inpt->window_resized)
-		refreshWidgets();
+    // Handle window resize events
+    if (inpt->window_resized) {
+        refreshWidgets();
+    }
 
-	curs->setLowHP(pc->isLowHpCursorEnabled() && pc->isLowHp());
+    // Update cursor state based on player HP
+    curs->setLowHP(pc->isLowHpCursorEnabled() && pc->isLowHp());
 
-	checkCutscene();
+    checkCutscene();
+    menu->logic(); // Process menus first for input priority
 
-	// check menus first (top layer gets mouse click priority)
-	menu->logic();
+	// Process gameplay logic when not paused
+    if (!isPaused()) {
+        updateGameTime();
+        processUnpausedActions();
+    }
 
-	if (!isPaused()) {
-		if (!second_timer.isEnd())
-			second_timer.tick();
-		else {
-			pc->time_played++;
-			second_timer.reset(Timer::BEGIN);
-		}
+    // Handle player death menu state
+    if (pc->close_menus) {
+        pc->close_menus = false;
+        menu->closeAll();
+    }
 
-		// these actions only occur when the game isn't paused
-		if (pc->stats.alive) checkLoot();
-		checkEnemyFocus();
-		checkNPCFocus();
-		if (pc->stats.alive) {
-			mapr->checkHotspots();
-			mapr->checkNearestEvent();
-			checkNPCInteraction();
-		}
-		checkTitle();
+    // Process system-level checks that run even when paused
+    processPausedActions();
 
-		menu->act->checkAction(pc->action_queue);
-		pc->logic();
+    // Update map and quest state
+    mapr->logic(isPaused());
+    mapr->enemies_cleared = entitym->isCleared();
+    quests->logic();
 
-		// transfer hero data to enemies, for AI use
-		if (pc->stats.get(Stats::STEALTH) > 100) entitym->hero_stealth = 100;
-		else entitym->hero_stealth = pc->stats.get(Stats::STEALTH);
+    // Handle character transformation
+    pc->checkTransform();
+    if (pc->setPowers) {
+        handlePowerTransformation();
+    }
+    if (pc->revertPowers) {
+        handlePowerReversion();
+    }
+    if (pc->respawn) {
+        handlePlayerRespawn();
+    }
 
-		entitym->logic();
-		hazards->logic();
-		loot->logic();
-		npcs->logic();
+    // Update cursor and UI state
+    if (menu->menus_open) {
+        curs->setCursor(CursorManager::CURSOR_NORMAL);
+    }
 
-		snd->logic(pc->stats.pos);
+    // Update action bar if needed
+    if (menu->act->updated) {
+        updateActionBarState();
+    }
 
-		comb->logic(mapr->cam.pos);
-	}
+    // Reload music if changed in pause menu
+    if (menu->exit->reload_music) {
+        mapr->loadMusic();
+        menu->exit->reload_music = false;
+    }
 
-	// close menus when the player dies, but still allow them to be reopened
-	if (pc->close_menus) {
-		pc->close_menus = false;
-		menu->closeAll();
-	}
+	// Check for combat initiation and ongoing combat logic
+    checkCombatState();
+}
 
-	// these actions occur whether the game is paused or not.
-	// TODO Why? Some of these probably don't need to be executed when paused
-	checkTeleport();
-	checkLootDrop();
-	checkLog();
-	checkBook();
-	checkEquipmentChange();
-	checkUsedItems();
-	checkStash();
-	checkSaveEvent();
-	checkNotifications();
-	checkCancel();
+/**
+ * Updates the game time when unpaused
+ */
+void GameStatePlay::updateGameTime() {
+    if (!second_timer.isEnd()) {
+        second_timer.tick();
+    }
+    else {
+        pc->time_played++;
+        second_timer.reset(Timer::BEGIN);
+    }
+}
 
-	mapr->logic(isPaused());
-	mapr->enemies_cleared = entitym->isCleared();
-	quests->logic();
+/**
+ * Processes game actions that only occur when the game is not paused
+ */
+void GameStatePlay::processUnpausedActions() {
+    // Handle player-related checks
+    if (pc->stats.alive) {
+        checkLoot();
+        mapr->checkHotspots();
+        mapr->checkNearestEvent();
+        checkNPCInteraction();
+    }
 
-	pc->checkTransform();
+    // Check entity focus
+    checkEnemyFocus();
+    checkNPCFocus();
+    checkTitle();
 
-	// change hero powers on transformation
-	if (pc->setPowers) {
-		pc->setPowers = false;
-		if (!pc->stats.humanoid && menu->pow->visible) menu->closeRight();
-		// save ActionBar state and lock slots from removing/replacing power
-		for (int i = 0; i < MenuActionBar::SLOT_MAX ; i++) {
-			menu->act->hotkeys_temp[i] = menu->act->hotkeys[i];
-			menu->act->hotkeys[i] = 0;
-		}
-		int count = MenuActionBar::SLOT_MAIN1;
-		// put creature powers on action bar
-		for (size_t i=0; i<pc->charmed_stats->powers_ai.size(); i++) {
-			if (powers->isValid(pc->charmed_stats->powers_ai[i].id) && powers->powers[pc->charmed_stats->powers_ai[i].id]->beacon != true) {
-				menu->act->hotkeys[count] = pc->charmed_stats->powers_ai[i].id;
-				menu->act->locked[count] = true;
-				count++;
-				if (count == MenuActionBar::SLOT_MAX)
-					count = 0;
-				else if (count == MenuActionBar::SLOT_MAIN1)
-					// we've filled the actionbar, stop adding powers to it
-					break;
-			}
-		}
-		if (pc->stats.manual_untransform && powers->isValid(pc->untransform_power)) {
-			menu->act->hotkeys[count] = pc->untransform_power;
-			menu->act->locked[count] = true;
-		}
-		else if (pc->stats.manual_untransform && pc->untransform_power == 0)
-			Utils::logError("GameStatePlay: Untransform power not found, you can't untransform manually");
+    // Process action queue and player logic
+    menu->act->checkAction(pc->action_queue);
+    pc->logic();
 
-		menu->act->updated = true;
+    // Update stealth mechanics
+    entitym->hero_stealth = std::min(pc->stats.get(Stats::STEALTH), 100.0f);
 
-		// reapply equipment if the transformation allows it
-		if (pc->stats.transform_with_equipment)
-			menu->inv->applyEquipment();
-	}
-	// revert hero powers
-	if (pc->revertPowers) {
-		pc->revertPowers = false;
+    // Update game systems
+    entitym->logic();
+    hazards->logic();
+    loot->logic();
+    npcs->logic();
+    snd->logic(pc->stats.pos);
+    comb->logic(mapr->cam.pos);
+}
 
-		// restore ActionBar state
-		for (int i = 0; i < MenuActionBar::SLOT_MAX; i++) {
-			menu->act->hotkeys[i] = menu->act->hotkeys_temp[i];
-			menu->act->locked[i] = false;
-		}
+/**
+ * Processes actions that continue even when the game is paused
+ */
+void GameStatePlay::processPausedActions() {
+    checkTeleport();
+    checkLootDrop();
+    checkLog();
+    checkBook();
+    checkEquipmentChange();
+    checkUsedItems();
+    checkStash();
+    checkSaveEvent();
+    checkNotifications();
+    checkCancel();
+}
 
-		menu->act->updated = true;
+/**
+ * Handles power transformation state changes
+ */
+void GameStatePlay::handlePowerTransformation() {
+    pc->setPowers = false;
+    
+    // Close power menu if not humanoid
+    if (!pc->stats.humanoid && menu->pow->visible) {
+        menu->closeRight();
+    }
 
-		// also reapply equipment here, to account items that give bonuses to base stats
-		menu->inv->applyEquipment();
-	}
+    // Save and clear action bar state
+    for (int i = 0; i < MenuActionBar::SLOT_MAX; i++) {
+        menu->act->hotkeys_temp[i] = menu->act->hotkeys[i];
+        menu->act->hotkeys[i] = 0;
+    }
 
-	// when the hero (re)spawns, reapply equipment & passive effects
-	if (pc->respawn) {
-		pc->stats.alive = true;
-		pc->stats.corpse = false;
-		pc->stats.cur_state = StatBlock::ENTITY_STANCE;
-		menu->inv->applyEquipment();
-		menu->inv->changed_equipment = true;
-		checkEquipmentChange();
-		pc->stats.hp = pc->stats.get(Stats::HP_MAX);
-		pc->stats.logic();
-		pc->stats.recalc();
-		menu->pow->resetToBasePowers();
-		menu->pow->setUnlockedPowers();
-		powers->activatePassives(&pc->stats);
-		pc->respawn = false;
-	}
+    // Add creature powers to action bar
+    int count = MenuActionBar::SLOT_MAIN1;
+    for (const auto& power : pc->charmed_stats->powers_ai) {
+        if (!powers->isValid(power.id) || 
+            powers->powers[power.id]->beacon) {
+            continue;
+        }
 
-	// use a normal mouse cursor is menus are open
-	if (menu->menus_open) {
-		curs->setCursor(CursorManager::CURSOR_NORMAL);
-	}
+        menu->act->hotkeys[count] = power.id;
+        menu->act->locked[count] = true;
+        
+        count++;
+        if (count == MenuActionBar::SLOT_MAX) {
+            count = 0;
+        }
+        else if (count == MenuActionBar::SLOT_MAIN1) {
+            break; // Action bar is full
+        }
+    }
 
-	// update the action bar as it may have been changed by items
-	if (menu->act->updated) {
-		menu->act->updated = false;
+    // Handle manual untransform power
+    if (pc->stats.manual_untransform) {
+        if (powers->isValid(pc->untransform_power)) {
+            menu->act->hotkeys[count] = pc->untransform_power;
+            menu->act->locked[count] = true;
+        }
+        else {
+            Utils::logError("GameStatePlay: Untransform power not found, you can't untransform manually");
+        }
+    }
 
-		// set all hotkeys to their base powers
-		for (unsigned i = 0; i < menu->act->slots_count; i++) {
-			menu->act->hotkeys_mod[i] = menu->act->hotkeys[i];
-		}
+    menu->act->updated = true;
 
-		updateActionBar(UPDATE_ACTIONBAR_ALL);
-	}
+    // Reapply equipment if allowed
+    if (pc->stats.transform_with_equipment) {
+        menu->inv->applyEquipment();
+    }
+}
 
-	// reload music if changed in the pause menu
-	if (menu->exit->reload_music) {
-		mapr->loadMusic();
-		menu->exit->reload_music = false;
-	}
+/**
+ * Handles reverting from transformed state
+ */
+void GameStatePlay::handlePowerReversion() {
+    pc->revertPowers = false;
 
-	// Add combat state check
-	checkCombatState();
+    // Restore action bar state
+    for (int i = 0; i < MenuActionBar::SLOT_MAX; i++) {
+        menu->act->hotkeys[i] = menu->act->hotkeys_temp[i];
+        menu->act->locked[i] = false;
+    }
+
+    menu->act->updated = true;
+    menu->inv->applyEquipment();
+}
+
+/**
+ * Handles player respawn state
+ */
+void GameStatePlay::handlePlayerRespawn() {
+    pc->stats.alive = true;
+    pc->stats.corpse = false;
+    pc->stats.cur_state = StatBlock::ENTITY_STANCE;
+    
+    // Reapply equipment and update stats
+    menu->inv->applyEquipment();
+    menu->inv->changed_equipment = true;
+    checkEquipmentChange();
+    
+    pc->stats.hp = pc->stats.get(Stats::HP_MAX);
+    pc->stats.logic();
+    pc->stats.recalc();
+    
+    // Reset powers
+    menu->pow->resetToBasePowers();
+    menu->pow->setUnlockedPowers();
+    powers->activatePassives(&pc->stats);
+    
+    pc->respawn = false;
+}
+
+/**
+ * Updates the action bar state when changes occur
+ */
+void GameStatePlay::updateActionBarState() {
+    menu->act->updated = false;
+
+    // Reset hotkeys to base powers
+    for (unsigned i = 0; i < menu->act->slots_count; i++) {
+        menu->act->hotkeys_mod[i] = menu->act->hotkeys[i];
+    }
+
+    updateActionBar(UPDATE_ACTIONBAR_ALL);
 }
 /**
  * Checks and updates the player's combat state.

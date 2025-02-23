@@ -89,6 +89,14 @@ private:
 	bool checkPrimaryStat(const std::string& first, const std::string& second);
 	void checkCombatState();
 
+	void updateGameTime();
+	void processUnpausedActions();
+	void processPausedActions();
+	void handlePowerTransformation();
+	void handlePowerReversion();
+	void handlePlayerRespawn();
+	void updateActionBarState();
+
 	int npc_id;
 
 	std::vector<Title> titles;
