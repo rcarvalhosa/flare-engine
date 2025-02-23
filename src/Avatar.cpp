@@ -544,6 +544,18 @@ void Avatar::updateDirectionTimer(int old_dir) {
  * Handles movement, powers, animations, and status changes
  */
 void Avatar::logic() {
+	
+	if (!was_in_combat && stats.in_combat) {
+    // Combat just started, reset movement variables
+		path.clear();                    // Clear any existing path
+		mm_target = stats.pos;           // Set target to current position
+		mm_target_desired = stats.pos;   // Align desired target with current position
+		mm_is_distant = false;           // Prevent movement trigger
+		stats.cur_state = StatBlock::ENTITY_STANCE; // Force stance state
+	}
+	was_in_combat = stats.in_combat; // Update previous state
+	
+	
 	handlePowerRestrictions();
 	handleBasicState();
 	handleLowHealthEffects();
@@ -748,7 +760,7 @@ void Avatar::handleMouseLock() {
 		if (settings->mouse_move_attack && cursor_enemy && !cursor_enemy->stats.hero_ally) {
 			inpt->lock[mm_key] = true;
 			lock_enemy = cursor_enemy;
-			mm_target_object = MM_TARGET_ENTITY;
+			mm_target_object = MM_TARGET_ENTITY;	
 		}
 
 		if (!cursor_enemy) {
@@ -975,7 +987,9 @@ void Avatar::handleStanceState() {
  * Handles the move state
  */
 void Avatar::handleMoveState() {
+	
 	setAnimation("run");
+	
 
 	if (!sound_steps.empty()) {
 		int stepfx = rand() % static_cast<int>(sound_steps.size());
@@ -1016,62 +1030,116 @@ void Avatar::handleMoveState() {
 }
 
 /**
- * Handles the power state
+ * Handles the power state, which manages the execution of character abilities
+ * This includes animation, power activation, and state transitions
  */
 void Avatar::handlePowerState() {
-	setAnimation(attack_anim);
+    setAnimation(attack_anim);
 
-	if (powers->isValid(current_power)) {
-		Power* power = powers->powers[current_power];
+    if (!powers->isValid(current_power)) {
+        return;
+    }
 
-		// if the player is attacking, show the attack cursor
-		if (!power->buff && !power->buff_teleport &&
-			power->type != Power::TYPE_TRANSFORM &&
-			power->type != Power::TYPE_BLOCK &&
-			!(power->starting_pos == Power::STARTING_POS_SOURCE && power->speed == 0)
-		) {
-			curs->setCursor(CursorManager::CURSOR_ATTACK);
+    const Power* power = powers->powers[current_power];
+    handlePowerCursor(power);
+    
+    if (activeAnimation->isFirstFrame()) {
+        initializePowerExecution(power);
+    }
+
+    if (activeAnimation->isActiveFrame() && !stats.hold_state) {
+        executePower(power);
+    }
+
+    checkStateTransition();
+}
+
+/**
+ * Sets the appropriate cursor based on power properties
+ */
+void Avatar::handlePowerCursor(const Power* power) {
+    bool should_show_attack_cursor = !power->buff && 
+                                   !power->buff_teleport &&
+                                   power->type != Power::TYPE_TRANSFORM &&
+                                   power->type != Power::TYPE_BLOCK &&
+                                   !(power->starting_pos == Power::STARTING_POS_SOURCE && 
+                                     power->speed == 0);
+
+    if (should_show_attack_cursor) {
+        curs->setCursor(CursorManager::CURSOR_ATTACK);
+    }
+}
+
+/**
+ * Initializes power execution on the first animation frame
+ */
+void Avatar::initializePowerExecution(const Power* power) {
+    
+	// If in combat
+	if (stats.in_combat && combat_manager) {
+		// If cannot take action, return
+        if (!combat_manager->canTakeAction()) {
+			return;
 		}
-
-		if (activeAnimation->isFirstFrame()) {
-			beginPower(current_power, &act_target);
-			float attack_speed = (stats.effects.getAttackSpeed(attack_anim) * power->attack_speed) / 100.0f;
-			activeAnimation->setSpeed(attack_speed);
-			for (size_t i=0; i<anims.size(); ++i) {
-				if (anims[i])
-					anims[i]->setSpeed(attack_speed);
-			}
-			playAttackSound(attack_anim);
-			power_cast_timers[current_power]->setDuration(activeAnimation->getDuration());
-			power_cast_timers[current_power_original]->setDuration(activeAnimation->getDuration()); // for replace_by_effect
-
-			// In combat, spend an action when starting a power
-			if (stats.in_combat && combat_manager) {
-				combat_manager->spendAction();
-			}
+		else {		
+			// Handle combat action cost	
+			combat_manager->spendAction();
 		}
+    }
+	
+	beginPower(current_power, &act_target);
+    
+    // Calculate and set animation speed
+    float attack_speed = (stats.effects.getAttackSpeed(attack_anim) * 
+                         power->attack_speed) / 100.0f;
+    
+    activeAnimation->setSpeed(attack_speed);
+    for (auto& anim : anims) {
+        if (anim) {
+            anim->setSpeed(attack_speed);
+        }
+    }
 
-		// do power
-		if (activeAnimation->isActiveFrame() && !stats.hold_state) {
-			// some powers check if the caster is blocking a tile
-			// so we block the player tile prematurely here
-			mapr->collider.block(stats.pos.x, stats.pos.y, !MapCollision::IS_ALLY);
+    // Setup timers and play sound
+    playAttackSound(attack_anim);
+    const auto animation_duration = activeAnimation->getDuration();
+    power_cast_timers[current_power]->setDuration(animation_duration);
+    power_cast_timers[current_power_original]->setDuration(animation_duration);
+}
 
-			powers->activate(current_power, &stats, stats.pos, act_target);
-			power_cooldown_timers[current_power]->setDuration(power->cooldown);
-			power_cooldown_timers[current_power_original]->setDuration(power->cooldown); // for replace_by_effect
+/**
+ * Executes the power during active animation frames
+ */
+void Avatar::executePower(const Power* power) {
+    // Block player tile for collision detection
+    mapr->collider.block(stats.pos.x, stats.pos.y, !MapCollision::IS_ALLY);
 
-			if (!stats.state_timer.isEnd())
-				stats.hold_state = true;
-		}
-	}
+    // Activate the power and set cooldowns
+    powers->activate(current_power, &stats, stats.pos, act_target);
+    power_cooldown_timers[current_power]->setDuration(power->cooldown);
+    power_cooldown_timers[current_power_original]->setDuration(power->cooldown);
 
-	// animation is done, switch back to normal stance
-	if ((activeAnimation->isLastFrame() && stats.state_timer.isEnd()) || activeAnimation->getName() != attack_anim) {
-		stats.cur_state = StatBlock::ENTITY_STANCE;
-		stats.cooldown.reset(Timer::BEGIN);
-		stats.prevent_interrupt = false;
-	}
+    if (!stats.state_timer.isEnd()) {
+        stats.hold_state = true;
+    }
+}
+
+/**
+ * Checks if state should transition back to stance
+ */
+void Avatar::checkStateTransition() {
+    bool should_return_to_stance = (activeAnimation->isLastFrame() && 
+                                  stats.state_timer.isEnd()) || 
+                                 activeAnimation->getName() != attack_anim;
+
+    if (should_return_to_stance) {
+        stats.cur_state = StatBlock::ENTITY_STANCE;
+        stats.cooldown.reset(Timer::BEGIN);
+        stats.prevent_interrupt = false;
+		inpt->lock[mm_key] = false; // Unlock input after action completes
+    	lock_enemy = nullptr;       // Clear locked enemy
+    	mm_target_object = MM_TARGET_NONE; // Reset target object
+    }
 }
 
 /**
@@ -1207,40 +1275,86 @@ void Avatar::handleCameraAndCooldowns() {
 	if (stats.cur_state != StatBlock::ENTITY_POWER && stats.charge_speed != 0.0f)
 		stats.charge_speed = 0.0f;
 }
-
+/**
+ * Initializes and sets up a power before activation
+ * @param replaced_id The ID of the power being initialized
+ * @param target Pointer to the target position for the power
+ */
 void Avatar::beginPower(PowerID replaced_id, FPoint* target) {
-	if (!target)
-		return;
+    
+	
+	// Early return if no valid target provided
+    if (!target) {
+        return;
+    }
 
-	const Power* power = powers->powers[replaced_id];
+    const Power* power = powers->powers[replaced_id];
+    initializeBlockingState(power);
+    handleMeleeTargeting(power, target);
+    updateDirectionAndTimers(power, target);
+    activateChainPowers(power);
+}
 
-	if (power->type == Power::TYPE_BLOCK)
-		stats.blocking = true;
+/**
+ * Sets blocking state if power is a blocking type
+ */
+void Avatar::initializeBlockingState(const Power* power) {
+    if (power->type == Power::TYPE_BLOCK) {
+        stats.blocking = true;
+    }
+}
 
-	// automatically target the selected enemy with melee attacks
-	if (inpt->usingMouse() && power->type == Power::TYPE_FIXED && power->starting_pos == Power::STARTING_POS_MELEE && cursor_enemy) {
-		*target = cursor_enemy->stats.pos;
-	}
+/**
+ * Handles auto-targeting for melee attacks when using mouse controls
+ */
+void Avatar::handleMeleeTargeting(const Power* power, FPoint* target) {
+    bool isMeleeAttack = power->type == Power::TYPE_FIXED && 
+                        power->starting_pos == Power::STARTING_POS_MELEE;
+    
+    if (inpt->usingMouse() && isMeleeAttack && cursor_enemy) {
+        *target = cursor_enemy->stats.pos;
+    }
+}
 
-	// is this a power that requires changing direction?
-	if (power->face) {
-		stats.direction = Utils::calcDirection(stats.pos.x, stats.pos.y, target->x, target->y);
-	}
+/**
+ * Updates character direction and state timers based on power properties
+ */
+void Avatar::updateDirectionAndTimers(const Power* power, const FPoint* target) {
+    // Update facing direction if required
+    if (power->face) {
+        stats.direction = Utils::calcDirection(
+            stats.pos.x, 
+            stats.pos.y, 
+            target->x, 
+            target->y
+        );
+    }
 
-	if (power->state_duration > 0)
-		stats.state_timer.setDuration(power->state_duration);
+    // Set state duration timer if applicable
+    if (power->state_duration > 0) {
+        stats.state_timer.setDuration(power->state_duration);
+    }
 
-	if (power->charge_speed != 0.0f)
-		stats.charge_speed = power->charge_speed;
+    // Update charge speed if specified
+    if (power->charge_speed != 0.0f) {
+        stats.charge_speed = power->charge_speed;
+    }
 
-	stats.prevent_interrupt = power->prevent_interrupt;
+    stats.prevent_interrupt = power->prevent_interrupt;
+}
 
-	for (size_t j = 0; j < power->chain_powers.size(); ++j) {
-		const ChainPower& chain_power = power->chain_powers[j];
-		if (chain_power.type == ChainPower::TYPE_PRE && Math::percentChanceF(chain_power.chance)) {
-			powers->activate(chain_power.id, &stats, stats.pos, *target);
-		}
-	}
+/**
+ * Activates any chain powers that should trigger before the main power
+ */
+void Avatar::activateChainPowers(const Power* power) {
+    for (const auto& chain_power : power->chain_powers) {
+        bool shouldActivate = chain_power.type == ChainPower::TYPE_PRE && 
+                            Math::percentChanceF(chain_power.chance);
+        
+        if (shouldActivate) {
+            powers->activate(chain_power.id, &stats, stats.pos, stats.pos);
+        }
+    }
 }
 
 void Avatar::transform() {

@@ -118,7 +118,16 @@ private:
 	void handleBlockState();
 	void handleHitState();
 	void handleDeadState();
-	
+
+	void initializeBlockingState(const Power* power);
+	void handleMeleeTargeting(const Power* power, FPoint* target);
+	void updateDirectionAndTimers(const Power* power, const FPoint* target);
+	void activateChainPowers(const Power* power);
+
+	void handlePowerCursor(const Power* power);
+	void initializePowerExecution(const Power* power);
+	void executePower(const Power* power);
+	void checkStateTransition();
 
 	std::vector<Step_sfx> step_def;
 
@@ -152,6 +161,8 @@ private:
 	bool isDroppedToLowHp();
 
 	std::vector<PowerID> power_cooldown_ids;
+
+	bool was_in_combat = false; // Tracks if avatar was previously in combat
 
 public:
 	enum {

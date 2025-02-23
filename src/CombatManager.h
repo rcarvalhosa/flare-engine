@@ -89,7 +89,6 @@ public:
     // Turn flow
     bool canTakeAction() const;
     bool isValidMovement(const FPoint& dest) const;
-    bool performAction(ActionType action);
     float getMovementRange() const;
     const TurnState& getCurrentTurnState() const { return turn_state; }
     const TurnState& getTurnState() const { return turn_state; }

@@ -340,40 +340,12 @@ bool CombatManager::isValidMovement(const FPoint& dest) const {
 }
 
 
-bool CombatManager::performAction(ActionType action) {
-    if (!canTakeAction()) return false;
-
-    Entity* current = getCurrentTurnEntity();
-    if (!current) return false;
-
-    // Validate and perform the action
-    bool action_successful = false;
-    switch (action) {
-        case ACTION_POWER:
-            // TODO: Implement attack action
-            action_successful = true;
-            break;
-        case ACTION_ITEM:
-            // TODO: Implement item action
-            action_successful = true;
-            break;
-        default:
-            return false;
-    }
-
-    if (action_successful) {
-        spendAction();
-        turn_state.last_action = action;
-    }
-
-    return action_successful;
-}
 
 void CombatManager::spendAction() {
     turn_state.actions_remaining--;
-   /* if (turn_state.actions_remaining <= 0) {
+   if (turn_state.actions_remaining <= 0) {
         nextTurn();
-   }*/
+   }
 }
 
 float CombatManager::getMovementRange() const {
