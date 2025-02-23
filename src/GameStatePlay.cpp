@@ -1010,65 +1010,82 @@ void GameStatePlay::logic() {
 	// Add combat state check
 	checkCombatState();
 }
-
-void GameStatePlay::checkCombatState() {
-	// If we're not in combat and there's a focused enemy
-	if (!combat_manager->isInCombat() && enemy && !enemy->stats.hero_ally) {
-		float dist = Utils::calcDist(pc->stats.pos, enemy->stats.pos);
-		
-		// Enter combat if enemy is in range and hostile
-		if (dist < enemy->stats.threat_range && enemy->stats.combat_style != StatBlock::COMBAT_PASSIVE) {
-			combat_manager->enterCombat(pc, enemy);
-		}
-	}
-	
-	// Update combat manager logic
-	if (combat_manager) {
-		combat_manager->logic();
-	}
-}
-
 /**
- * Render all graphics for a single frame
+ * Checks and updates the player's combat state.
+ * Handles combat initiation when enemies are in range and updates combat logic.
+ * 
+ * Combat starts when:
+ * 1. Player is not already in combat
+ * 2. There is a focused hostile enemy
+ * 3. Enemy is within their threat range
+ * 4. Enemy is not passive
+ */
+void GameStatePlay::checkCombatState() {
+    // Skip if no combat manager exists
+    if (!combat_manager) {
+        return;
+    }
+
+    // Check for combat initiation conditions
+    bool canInitiateCombat = !combat_manager->isInCombat() && 
+                            enemy && 
+                            !enemy->stats.hero_ally &&
+                            enemy->stats.combat_style != StatBlock::COMBAT_PASSIVE;
+
+    if (canInitiateCombat) {
+        float distanceToEnemy = Utils::calcDist(pc->stats.pos, enemy->stats.pos);
+        
+        if (distanceToEnemy < enemy->stats.threat_range) {
+            combat_manager->enterCombat(pc, enemy);
+        }
+    }
+
+    // Process ongoing combat logic
+    combat_manager->logic();
+}
+/**
+ * Renders all game graphics for a single frame in the following order:
+ * 1. Living and dead entities (player, NPCs, enemies, items, hazards)
+ * 2. Map layers and all renderables
+ * 3. UI elements (tooltips, minimap, menus)
+ * 4. Combat text (always on top when not paused)
  */
 void GameStatePlay::render() {
-	if (mapr->is_spawn_map)
-		return;
+    // Skip rendering if on spawn map
+    if (mapr->is_spawn_map) {
+        return;
+    }
 
-	// Create a list of Renderables from all objects not already on the map.
-	// split the list into the beings alive (may move) and dead beings (must not move)
-	std::vector<Renderable> rens;
-	std::vector<Renderable> rens_dead;
+    // Containers for renderable game objects
+    std::vector<Renderable> livingEntities;    // Entities that can move
+    std::vector<Renderable> deadEntities;      // Static entities
 
-	pc->addRenders(rens);
+    // Collect all renderable entities
+    pc->addRenders(livingEntities);            // Player character
+    entitym->addRenders(livingEntities, deadEntities);  // Enemies/objects
+    npcs->addRenders(livingEntities);          // NPCs (always living)
+    loot->addRenders(livingEntities, deadEntities);     // Items
+    hazards->addRenders(livingEntities, deadEntities);  // Hazards/effects
 
-	entitym->addRenders(rens, rens_dead);
+    // Render map and all collected entities
+    mapr->render(livingEntities, deadEntities);
 
-	npcs->addRenders(rens); // npcs cannot be dead
+    // Render UI elements
+    loot->renderTooltips(mapr->cam.pos);
 
-	loot->addRenders(rens, rens_dead);
+    // Update and render minimap
+    if (mapr->map_change) {
+        menu->mini->prerender(&mapr->collider, mapr->w, mapr->h);
+        mapr->map_change = false;
+    }
+    menu->mini->setMapTitle(mapr->title);
+    menu->mini->render(pc->stats.pos);
+    menu->render();
 
-	hazards->addRenders(rens, rens_dead);
-
-
-	// render the static map layers plus the renderables
-	mapr->render(rens, rens_dead);
-
-	// mouseover tooltips
-	loot->renderTooltips(mapr->cam.pos);
-
-	if (mapr->map_change) {
-		menu->mini->prerender(&mapr->collider, mapr->w, mapr->h);
-		mapr->map_change = false;
-	}
-	menu->mini->setMapTitle(mapr->title);
-	menu->mini->render(pc->stats.pos);
-	menu->render();
-
-	// render combat text last - this should make it obvious you're being
-	// attacked, even if you have menus open
-	if (!isPaused())
-		comb->render();
+    // Render combat text on top when game is not paused
+    if (!isPaused()) {
+        comb->render();
+    }
 }
 
 bool GameStatePlay::isPaused() {
