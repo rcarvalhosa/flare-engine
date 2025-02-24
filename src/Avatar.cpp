@@ -1106,18 +1106,11 @@ void Avatar::initializePowerExecution(const Power* power) {
     
 	// If in combat
 	if (stats.in_combat && combat_manager) {
-		// If cannot take action, return
-        if (!combat_manager->canTakeAction()) {
-			stats.cur_state = StatBlock::ENTITY_STANCE;
-			return;
-		}
-		else {		
-			// Handle combat action cost	
-			combat_manager->spendAction();
-		}
+		// Handle combat action cost	
+		combat_manager->spendAction();
     }
 	
-	beginPower(current_power, &act_target);
+	//beginPower(current_power, &act_target);
     
     // Calculate and set animation speed
     float attack_speed = (stats.effects.getAttackSpeed(attack_anim) * 

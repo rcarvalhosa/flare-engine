@@ -566,12 +566,7 @@ void MenuActionBar::remove(const Point& mouse) {
  * @param action_queue Vector to store triggered actions
  */
 void MenuActionBar::checkAction(std::vector<ActionData>& action_queue) {
-    // Configure input state based on settings
-    bool enable_mouse_move = (!settings->mouse_move || inpt->pressing[Input::SHIFT] || inpt->usingTouchscreen());
-    bool enable_main1 = (!inpt->usingTouchscreen() || (!menu->menus_open && menu->touch_controls->checkAllowMain1())) 
-                       && (settings->mouse_move_swap || enable_mouse_move);
-    bool enable_main2 = !settings->mouse_move_swap || enable_mouse_move;
-
+    
     // Handle mouse movement targeting
     unsigned mouse_move_slot = settings->mouse_move_swap ? 11 : 10;
     bool has_mouse_move_target = checkMouseMoveTarget(mouse_move_slot);
@@ -743,6 +738,7 @@ void MenuActionBar::processValidAction(unsigned slot_index, ActionData& action, 
         if (!combat_manager->canTakeAction()) {
             return;
         }
+
     }
 
     // Set cooldown
