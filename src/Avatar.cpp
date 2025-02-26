@@ -333,18 +333,9 @@ bool Avatar::pressing_move() {
 	else if (stats.effects.knockback_speed != 0) {
 		return false;
 	}
-	// In combat, only allow mouse movement
-	else if (stats.in_combat) {
-		return settings->mouse_move && mm_is_distant && !isNearMMtarget();
-	}
-	else if (settings->mouse_move) {
-		return mm_is_distant && !isNearMMtarget();
-	}
+	// Only mouse movement is supported
 	else {
-		return (inpt->pressing[Input::UP] && !inpt->lock[Input::UP]) ||
-			   (inpt->pressing[Input::DOWN] && !inpt->lock[Input::DOWN]) ||
-			   (inpt->pressing[Input::LEFT] && !inpt->lock[Input::LEFT]) ||
-			   (inpt->pressing[Input::RIGHT] && !inpt->lock[Input::RIGHT]);
+		return mm_is_distant && !isNearMMtarget();
 	}
 }
 
@@ -355,13 +346,8 @@ void Avatar::set_direction() {
 
     int old_dir = stats.direction;
 
-    // Handle direction changes based on control scheme
-    if (settings->mouse_move) {
-        handleMouseMoveDirection();
-    }
-    else {
-        handleKeyboardDirection(); 
-    }
+    // Handle direction changes based on mouse movement
+    handleMouseMoveDirection();
 
     // Set direction change cooldown timer
     updateDirectionTimer(old_dir);
@@ -485,42 +471,8 @@ void Avatar::updatePathTarget() {
     }
 }
 
-
-void Avatar::handleKeyboardDirection() {
-    // Check movement keys
-    bool press_up = inpt->pressing[Input::UP] && !inpt->lock[Input::UP];
-    bool press_down = inpt->pressing[Input::DOWN] && !inpt->lock[Input::DOWN];
-    bool press_left = inpt->pressing[Input::LEFT] && !inpt->lock[Input::LEFT];
-    bool press_right = inpt->pressing[Input::RIGHT] && !inpt->lock[Input::RIGHT];
-
-    // Fall back to aim keys if no movement keys pressed
-    if (!press_up && !press_down && !press_left && !press_right) {
-        press_up = inpt->pressing[Input::AIM_UP] && !inpt->lock[Input::AIM_UP];
-        press_down = inpt->pressing[Input::AIM_DOWN] && !inpt->lock[Input::AIM_DOWN];
-        press_left = inpt->pressing[Input::AIM_LEFT] && !inpt->lock[Input::AIM_LEFT];
-        press_right = inpt->pressing[Input::AIM_RIGHT] && !inpt->lock[Input::AIM_RIGHT];
-    }
-
-    // Set direction based on key combinations
-    if (press_up && press_left) stats.direction = 1;
-    else if (press_up && press_right) stats.direction = 3;
-    else if (press_down && press_right) stats.direction = 5;
-    else if (press_down && press_left) stats.direction = 7;
-    else if (press_left) stats.direction = 0;
-    else if (press_up) stats.direction = 2;
-    else if (press_right) stats.direction = 4;
-    else if (press_down) stats.direction = 6;
-
-    // Adjust for orthogonal tilesets
-    if (eset->tileset.orientation == eset->tileset.TILESET_ORTHOGONAL && 
-        (press_up || press_down || press_left || press_right)) {
-        stats.direction = static_cast<unsigned char>(
-            (stats.direction == 7) ? 0 : stats.direction + 1);
-    }
-}
-
 void Avatar::updateDirectionTimer(int old_dir) {
-    if (settings->mouse_move) {
+    if (stats.direction != old_dir) {
         // Calculate optimal turn delay for mouse movement
         int delay_ticks = settings->max_frames_per_sec / 2;
 
@@ -530,12 +482,6 @@ void Avatar::updateDirectionTimer(int old_dir) {
             Utils::calcDist(stats.pos, mm_target) * 0.5f / real_speed);
             
         set_dir_timer.setDuration(std::min(delay_ticks, max_turn_ticks));
-    }
-    else {
-        // 100ms cooldown for keyboard direction changes
-        if (stats.direction != old_dir) {
-            set_dir_timer.setDuration(settings->max_frames_per_sec / 10);
-        }
     }
 }
 
@@ -718,9 +664,8 @@ void Avatar::handleMouseMovement() {
 	using_main1 = inpt->pressing[Input::MAIN1] && !inpt->lock[Input::MAIN1];
 	using_main2 = inpt->pressing[Input::MAIN2] && !inpt->lock[Input::MAIN2];
 
-	if (settings->mouse_move) {
-		handleMouseTargeting();
-	}
+	// Always handle mouse targeting
+	handleMouseTargeting();
 }
 
 /**

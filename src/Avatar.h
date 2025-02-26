@@ -80,7 +80,6 @@ private:
 	void loadStepSoundDefinitions();
 
 	void handleMouseMoveDirection();
-	void handleKeyboardDirection();
 	void updateDirectionTimer(int old_dir);
 	bool isValidCombatMove(const FPoint& target);
 	void handlePathfinding();
