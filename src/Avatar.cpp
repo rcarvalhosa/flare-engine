@@ -326,6 +326,10 @@ void Avatar::loadStepFX(const std::string& stepname) {
 }
 
 
+/**
+ * Determines if the avatar is pressing the movement key
+ * @return true if the avatar is pressing the movement key, false otherwise
+ */
 bool Avatar::pressing_move() {
 	if (!allow_movement || teleport_camera_lock) {
 		return false;
@@ -339,6 +343,9 @@ bool Avatar::pressing_move() {
 	}
 }
 
+/**
+ * Sets the direction of the avatar based on mouse movement
+ */
 void Avatar::set_direction() {
     // Don't change direction during teleport or if direction timer hasn't expired
     if (teleport_camera_lock || !set_dir_timer.isEnd())
@@ -354,6 +361,9 @@ void Avatar::set_direction() {
 }
 
 
+/**
+ * Handles mouse movement direction
+ */
 void Avatar::handleMouseMoveDirection() {
     if (!mm_is_distant)
         return;
@@ -399,7 +409,9 @@ void Avatar::handleMouseMoveDirection() {
 }
 
 
-
+/**
+ * Handles pathfinding for the avatar
+ */
 void Avatar::handlePathfinding() {
     bool should_recalc = shouldRecalculatePath();
     
@@ -417,6 +429,10 @@ void Avatar::handlePathfinding() {
     updatePathTarget();
 }
 
+/**
+ * Determines if the path should be recalculated
+ * @return true if the path should be recalculated, false otherwise
+ */
 bool Avatar::shouldRecalculatePath() {
     // Add random chance to recalculate to spread processing load
     chance_calc_path += 5;
@@ -441,6 +457,9 @@ bool Avatar::shouldRecalculatePath() {
     return false;
 }
 
+/**
+ * Recalculates the path for the avatar
+ */
 void Avatar::recalculatePath() {
     chance_calc_path = -100;
     path.clear();
@@ -461,6 +480,9 @@ void Avatar::recalculatePath() {
     }
 }
 
+/**
+ * Updates the target position for the avatar
+ */
 void Avatar::updatePathTarget() {
     if (!path.empty()) {
         mm_target = path.back();
@@ -471,6 +493,9 @@ void Avatar::updatePathTarget() {
     }
 }
 
+/**
+ * Updates the direction timer for the avatar
+ */
 void Avatar::updateDirectionTimer(int old_dir) {
     if (stats.direction != old_dir) {
         // Calculate optimal turn delay for mouse movement
@@ -1048,15 +1073,7 @@ void Avatar::handlePowerCursor(const Power* power) {
  * Initializes power execution on the first animation frame
  */
 void Avatar::initializePowerExecution(const Power* power) {
-    
-	// If in combat
-	if (stats.in_combat && combat_manager) {
-		// Handle combat action cost	
-		combat_manager->spendAction();
-    }
-	
-	//beginPower(current_power, &act_target);
-    
+        
     // Calculate and set animation speed
     float attack_speed = (stats.effects.getAttackSpeed(attack_anim) * 
                          power->attack_speed) / 100.0f;
@@ -1081,6 +1098,11 @@ void Avatar::initializePowerExecution(const Power* power) {
 void Avatar::executePower(const Power* power) {
     // Block player tile for collision detection
     mapr->collider.block(stats.pos.x, stats.pos.y, !MapCollision::IS_ALLY);
+
+    // If in combat, spend an action point when actually executing the power
+    if (stats.in_combat && combat_manager) {
+        combat_manager->spendAction();
+    }
 
     // Activate the power and set cooldowns
     powers->activate(current_power, &stats, stats.pos, act_target);
